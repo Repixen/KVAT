@@ -11,4 +11,5 @@
 	<createSlaveProjects value=""/>
 	<filesToOpen value=""/>
 	<origin value="/Applications/ti/TivaWare/examples/boards/ek-tm4c129exl/blinky/ccs"/>
+	<isTargetManual value="false"/>
 </projectOptions>

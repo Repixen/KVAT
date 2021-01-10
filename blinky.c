@@ -22,6 +22,7 @@
 //
 //*****************************************************************************
 
+#include <kvat/kvat.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include "inc/hw_memmap.h"
@@ -29,15 +30,11 @@
 #include "driverlib/gpio.h"
 #include "driverlib/sysctl.h"
 
-//*****************************************************************************
-//
-//! \addtogroup example_list
-//! <h1>Blinky (blinky)</h1>
-//!
-//! A very simple example that blinks the on-board LED using direct register
-//! access.
-//
-//*****************************************************************************
+#include "drivers/pinout.h"
+#include "utils/uartstdio.h"
+#include "utils/ustdlib.h"
+#include "kvat/kvat.h"
+
 
 //*****************************************************************************
 //
@@ -52,27 +49,67 @@ __error__(char *pcFilename, uint32_t ui32Line)
 }
 #endif
 
+
+void kvatTest(){
+
+    KVATException xcpt = KVATSaveValue("rox", "12345678901234567890123456789012345678901234567890123456789A", 61);
+
+
+    //    saveValue("gregostancio33conmijoycontigoenelbañoconlaabuelaenlagranja", "12345678901234567890", 11);
+
+    KVATSize readSize;
+
+    char* greg = KVATRetrieveValue("rox", &readSize);
+
+    UARTprintf("<v>%s\n", greg);
+
+    UARTprintf("<s>%u\n", readSize);
+
+    UARTprintf("<s>%d\n", xcpt);
+
+
+
+    GPIOIntClear(GPIO_PORTJ_BASE, GPIO_PIN_0|GPIO_PIN_1);
+}
+
 //*****************************************************************************
 //
 // Blink the on-board LED.
 //
 //*****************************************************************************
-int
-main(void)
-{
-    volatile uint32_t ui32Loop;
+int main(void){
+
+    uint32_t ui32SysClock;
+    //
+    // Run from the PLL at 120 MHz.
+    // Note: SYSCTL_CFG_VCO_240 is a new setting provided in TivaWare 2.2.x and
+    // later to better reflect the actual VCO speed due to SYSCTL#22.
+    //
+    ui32SysClock = SysCtlClockFreqSet((SYSCTL_XTAL_25MHZ |
+                                           SYSCTL_OSC_MAIN |
+                                           SYSCTL_USE_PLL |
+                                           SYSCTL_CFG_VCO_240), 120000000);
+
+    PinoutSet(false, false);
 
     //
-    // Enable the GPIO port that is used for the on-board LED.
+    // Initialize the UART, clear the terminal, and print banner.
     //
-    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPION);
+    UARTStdioConfig(0, 115200, ui32SysClock);
+    UARTprintf("\033[2J\033[H");
+    UARTprintf("KVAT 0.1\n");
 
-    //
-    // Check if the peripheral access is enabled.
-    //
-    while(!SysCtlPeripheralReady(SYSCTL_PERIPH_GPION))
-    {
-    }
+
+    // Register J0 interrupt
+    GPIOIntRegister(GPIO_PORTJ_BASE, &kvatTest);
+
+    // This is basically GPIOPinTypeGPIOInput, but we can't just call it because it doesn't configure the pull-up J0 needs. Need to do it manually.
+    GPIODirModeSet(GPIO_PORTJ_BASE, GPIO_PIN_0, GPIO_DIR_MODE_IN);
+    GPIOPadConfigSet(GPIO_PORTJ_BASE, GPIO_PIN_0, GPIO_STRENGTH_2MA, GPIO_PIN_TYPE_STD_WPU);
+
+    // Set Interrupt type and enable
+    GPIOIntTypeSet(GPIO_PORTJ_BASE, GPIO_PIN_0, GPIO_RISING_EDGE);
+    GPIOIntEnable(GPIO_PORTJ_BASE, GPIO_PIN_0);
 
     //
     // Enable the GPIO pin for the LED (PN0).  Set the direction as output, and
@@ -80,6 +117,11 @@ main(void)
     //
     GPIOPinTypeGPIOOutput(GPIO_PORTN_BASE, GPIO_PIN_0);
 
+    bool kvatStatus = KVATInit();
+    UARTprintf(kvatStatus ? "Init: Pass\n" : "Init Error\n");
+
+
+    volatile uint32_t ui32Loop;
     //
     // Loop forever.
     //
@@ -89,24 +131,12 @@ main(void)
         // Turn on the LED.
         //
         GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_0, GPIO_PIN_0);
-
-        //
-        // Delay for a bit.
-        //
-        for(ui32Loop = 0; ui32Loop < 200000; ui32Loop++)
-        {
-        }
+        for(ui32Loop = 0; ui32Loop < 2000000; ui32Loop++);
 
         //
         // Turn off the LED.
         //
         GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_0, 0x0);
-
-        //
-        // Delay for a bit.
-        //
-        for(ui32Loop = 0; ui32Loop < 200000; ui32Loop++)
-        {
-        }
+        for(ui32Loop = 0; ui32Loop < 2000000; ui32Loop++);
     }
 }
