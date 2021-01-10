@@ -3,12 +3,12 @@
  *
  *      Author: repixen
  */
+#include <kvat/kvat.h>
 
 #include <stdlib.h>
 #include <string.h>
 #include <driverlib/sysctl.h>
 #include <driverlib/eeprom.h>
-#include <kvat/kvat.h>
 
 //==========================================================
 // FORMATTING LIMITS

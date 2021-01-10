@@ -55,8 +55,6 @@ void kvatTest(){
     KVATException xcpt = KVATSaveValue("rox", "12345678901234567890123456789012345678901234567890123456789A", 61);
 
 
-    //    saveValue("gregostancio33conmijoycontigoenelbañoconlaabuelaenlagranja", "12345678901234567890", 11);
-
     KVATSize readSize;
 
     char* greg = KVATRetrieveValue("rox", &readSize);
