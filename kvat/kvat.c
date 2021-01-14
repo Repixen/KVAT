@@ -5,7 +5,6 @@
  */
 #include <kvat/kvat.h>
 
-#include <stdlib.h>
 #include <string.h>
 #include <driverlib/sysctl.h>
 #include <driverlib/eeprom.h>
@@ -13,7 +12,7 @@
 //==========================================================
 // FORMATTING LIMITS
 
-#define FORMATID 203
+#define FORMATID 201
 #define PAGESIZE 8      // Pages need to be a multiple of 4 in size (max 256)
 #define PAGECOUNT 128   // 255 max on a single byte paging scheme
 
@@ -34,26 +33,29 @@
  *
  */
 
+// OVERALL
+#define MDEFAULT        0x00    // Default value for metadata
+
 // STATUS
-#define MACTIVE      0x01    // (bool) Active entry (currently pointing to valid chains)
-#define MOPEN        0x02    // (bool) Entry is currently being edited
+#define MACTIVE         0x01    // (bool) Active entry (currently pointing to valid chains)
+#define MOPEN           0x02    // (bool) Entry is currently being edited
 
 // KEY TYPE
-#define MKEYCHAIN    0x04    // Mask
-#define MKC_MULTIPLE 0x00    // Key is stored in multiple pages
-#define MKC_SINGLE   0x04    // Key is stored in single page
+#define MKC_ISMULTIPLE  0x04    // Mask
+#define MKC_MULTIPLE    0x00    // Key is stored in multiple pages
+#define MKC_SINGLE      0x04    // Key is stored in single page
 
 // VALUE
-#define MVALUECHAIN  0x08    // Mask
-#define MVC_MULTIPLE 0x00    // Value is stored in multiple pages
-#define MVC_SINGLE   0x08    // Value is stored in single page
+#define MVC_ISMULTIPLE  0x08    // Mask
+#define MVC_MULTIPLE    0x00    // Value is stored in multiple pages
+#define MVC_SINGLE      0x08    // Value is stored in single page
 
 // KEY FORMAT
-#define MKEYFORMAT   0x30    // Mask
-#define MKF_STRING   0x00    // String
-#define MKF_UINT32   0x10    // Unsigned int
-//#define MKF_         0x20    // (undefined)
-//#define MKF_         0x30    // (undefined)
+#define MKEYFORMAT      0x30    // Mask
+#define MKF_STRING      0x00    // String
+//#define MKF_UINT32       0x10    // Unsigned int
+//#define MKF_             0x20    // (undefined)
+//#define MKF_             0x30    // (undefined)
 
 
 
@@ -106,7 +108,12 @@ static bool saveIndex(){
     return !programResult;
 }
 
-static void readIndex(){
+/**
+ * Reads stored index from storage into 'index'
+ *
+ * @return KVATException_ (none) (heapError)
+ */
+static KVATException readIndex(){
     // Read into compatible uint32_t buffer
     uint32_t* indexBuff = malloc(sizeof(KVATIndex));
     EEPROMRead(indexBuff, INDEXSTART, sizeof(KVATIndex));
@@ -114,10 +121,14 @@ static void readIndex(){
     // Copy into actual index
     if (index!=NULL){
         memcpy(index, indexBuff, sizeof(KVATIndex));
+
+        // Get rid of buffer
+        free(indexBuff);
+    }else{
+        return KVATException_heapError;
     }
 
-    // Get rid of buffer
-    free(indexBuff);
+    return KVATException_none;
 }
 
 static void setEntryMetadata(KVATKeyValueEntry* entry, MetaData mask, MetaData value){
@@ -221,7 +232,7 @@ static bool formatMemory(){
     index->pageCount = PAGECOUNT;
     index->pageBeginAddress = getNaturalAddressOfPage0();
 
-    KVATKeyValueEntry emptyEntry = {.metadata = 0};
+    KVATKeyValueEntry emptyEntry = {.metadata = MDEFAULT};
 
     //Mark entries as empty (including invalid page 0)
     for (PageNumber entryN = 0; entryN<PAGECOUNT; entryN++){
@@ -433,6 +444,8 @@ static PageNumber getEmptyPageNumber(bool shouldMarkAsUsed){
  * @param      isSingle          Indicates if a chain is single paged
  */
 static void followPageChainAndSetPageRecord(PageNumber chainStart, bool isActive, bool isSingle){
+    if (chainStart==0){return;}
+
     PageNumber currentPageN = chainStart;
     PageNumber chainPageN = 0;// Marks the number of the current page in the chain
     PageNumber pageCount = index->pageCount;
@@ -459,14 +472,14 @@ static void followPageChainAndSetPageRecord(PageNumber chainStart, bool isActive
  * Called during init process.
  */
 static void updatePageRecord(){
-    // Update might need more memory. If called after initial exploration, throwaway.
+    // Update might need more reallocation. If called after initial exploration, throwaway.
     if (pageRecord!=NULL){
         free(pageRecord);
     }
 
     // Get memory to hold the page record
     KVATSize pageRecordSize = getPageRecordSize();
-    pageRecord = malloc(pageRecordSize);
+    pageRecord = malloc(pageRecordSize);    // Permanent allocation
 
     // Set to 0's (empty)
     memset(pageRecord, 0, pageRecordSize);
@@ -485,9 +498,9 @@ static void updatePageRecord(){
         // Check if entry is active and follow chains for name and value to update records
         if (entry.metadata & MACTIVE){
             //Follow key
-            followPageChainAndSetPageRecord(entry.keyPage, true, entry.metadata & MKEYCHAIN);
+            followPageChainAndSetPageRecord(entry.keyPage, true, entry.metadata & MKC_ISMULTIPLE);
             //Follow value
-            followPageChainAndSetPageRecord(entry.valuePage, true, entry.metadata & MVALUECHAIN);
+            followPageChainAndSetPageRecord(entry.valuePage, true, entry.metadata & MVC_ISMULTIPLE);
         }
     }
 }
@@ -496,7 +509,8 @@ static void updatePageRecord(){
 //  FETCH
 
 /**
- * Pulls entire data chain into a single allocated buffer and returns pointer. Null terminated.
+ * Allocates!
+ * Pulls entire data chain into a single allocated buffer and returns pointer. Extra null terminated after max size for security.
  * If expecting to perform multiple fetches, a preallocated memory region can be used for the fetched data.
  *
  * @param      startPage           The number of the page that the data chain starts on.
@@ -528,9 +542,9 @@ static PageDataRef fetchData(PageNumber startPage, bool isSinglePage, KVATSize* 
     KVATSize pageDataSize = index->pageSize-pageNextSize;
     KVATSize recordSize = pageDataSize*pageCount+1;         // Size of the record being fetched (plus 1 for null terminator)
 
-    // Make nice buffers. One to keep a single page, another to keep the whole data read.
+    // Make nice buffers. One to keep a single page, another to keep the whole data read, unless it fits in preallocBuffer.
     PageDataRef singlePage = malloc(index->pageSize);
-    PageDataRef record = (preallocBuffer!=NULL && preallocBufferSize>=recordSize) ? preallocBuffer : malloc(recordSize);
+    PageDataRef record = (preallocBuffer!=NULL && preallocBufferSize>=recordSize) ? preallocBuffer : malloc(recordSize); // Returned allocation
 
     // Add null terminator in extra byte
     record[pageDataSize*pageCount] = '\0';
@@ -680,6 +694,15 @@ static PageNumber writeData(PageDataRef data, KVATSize size, PageNumber overwrit
 //////////////////////////////////////////////////////////////////
 //  LOOKUP
 
+/**
+ * Looks for the entry number that matches a key, either exactly or partially.
+ *
+ * @param      key                       String tag to look for.
+ * @param      isPartialKey              Indicates if key passed is only part of the string to match.
+ * @param      entryNumberSearchStart    Entry number to start searching from.
+ *
+ * @return Number of the first entry that matched the key.
+ */
 static PageNumber lookupByKey(char* key, bool isPartialKey, PageNumber entryNumberSearchStart){
     PageNumber match = 0;   // To keep the entry that matched
 
@@ -703,7 +726,7 @@ static PageNumber lookupByKey(char* key, bool isPartialKey, PageNumber entryNumb
         if (entry.metadata & MACTIVE){
 
             // Fetch the key
-            entryKey = (char*)fetchData(entry.keyPage, entry.metadata & MKEYCHAIN, NULL, (PageDataRef)entryKeyPreallocBuff, STRINGKEYSTDLEN);
+            entryKey = (char*)fetchData(entry.keyPage, entry.metadata & MKC_ISMULTIPLE, NULL, (PageDataRef)entryKeyPreallocBuff, STRINGKEYSTDLEN);
 
             // Check key
             entryKeySize = strlen(entryKey);
@@ -736,15 +759,17 @@ static PageNumber lookupByKey(char* key, bool isPartialKey, PageNumber entryNumb
 //  PUBLIC SAVE
 
 /**
- * Saves a string of data tagged with a key
+ * Saves data tagged with a key
  *
  * @param      key            String tag for the value to save
  * @param      value          Reference to value to save in storage
  * @param      valueSize      Length of the value to save
  *
- * @return
+ * @return KVATException_ (insufficientSpace) (none)
  */
 KVATException KVATSaveValue(char* key, void* value, KVATSize valueSize){
+    if (!isInit || !key){return KVATException_invalidAccess;}
+
     // Get empty table entry for new, or existing for overwrite
     PageNumber tableEntryN = lookupByKey(key, false, 1);   // Look for same string (overwrite)
     bool isOverwrite = true;
@@ -779,7 +804,7 @@ KVATException KVATSaveValue(char* key, void* value, KVATSize valueSize){
 
     // Prepare overwrite variables (if needed)
     PageNumber overwriteChainStart = isOverwrite ? tableEntry.valuePage : NULL; // The start page of the old chain
-    bool isOverwriteChainSingle = tableEntry.metadata & MVALUECHAIN;
+    bool isOverwriteChainSingle = tableEntry.metadata & MVC_ISMULTIPLE;
 
     // Try to save the data (value)
     PageNumber valueStartPage = writeData((PageDataRef)value, valueSize, overwriteChainStart, isOverwriteChainSingle, &valueSavedInSinglePage, &valueRemains);
@@ -790,7 +815,7 @@ KVATException KVATSaveValue(char* key, void* value, KVATSize valueSize){
 
     // Set right metadata.
     if (isOverwrite){
-        tableEntry.metadata &= MKEYCHAIN;   // Only keep previous key settings
+        tableEntry.metadata &= MKC_ISMULTIPLE;   // Only keep previous key settings
     }else{
         tableEntry.metadata = keySavedInSinglePage ? MKC_SINGLE : MKC_MULTIPLE; // Reset previous contents with new key settings
     }
@@ -805,6 +830,18 @@ KVATException KVATSaveValue(char* key, void* value, KVATSize valueSize){
     return KVATException_none;
 }
 
+/**
+ * Saves a string of data tagged with a key
+ *
+ * @param      key            String tag for the value to save
+ * @param      value          Reference to string to save
+ *
+ * @return KVATException_ (insufficientSpace) (none)
+ */
+KVATException KVATSaveString(char* key, char* value){
+    return KVATSaveValue(key, (void*) value, strlen(value)+1); // Add 1 to length to save null terminator
+}
+
 //////////////////////////////////////////////////////////////////
 //  PUBLIC RETRIEVE
 
@@ -812,39 +849,91 @@ KVATException KVATSaveValue(char* key, void* value, KVATSize valueSize){
  * Returns pointer to value corresponding to a key
  *
  * @param      key            String tag for the value to retrieve
- * @param[out] size           Size of the value returned in bytes.
+ * @param[out] valuePointRef  Reference to a pointer that will be set to point to retrieved value.
+ *                            Set to NULL if no match found.
+ * @param[out] size           Optional: Size of the value returned in bytes.
  *
- * @return Pointer to allocated space including the retrieved value. NULL if no match found.
+ * @return KVATException_ (invalidAccess) (notFound) (none)
  */
-void* KVATRetrieveValue(char* key, KVATSize* size){
+KVATException KVATRetrieveValue(char* key, void** valuePointRef, KVATSize* size){
     // Assert
-    if (!key){return NULL;}
+    if (!isInit || !key){return KVATException_invalidAccess;}
 
     // Look for this thing
     PageNumber tableEntryN = lookupByKey(key, false, 1);   // Look for same string (overwrite)
 
-    if (tableEntryN==0){return NULL;}
+    if (tableEntryN==0){*valuePointRef = NULL; return KVATException_notFound;}
 
-    // Get Record
+    // Get entry
     KVATKeyValueEntry tableEntry;
     readTableEntry(&tableEntry, tableEntryN);
 
     KVATSize maxSize = 0;
 
     // Read value
-    PageDataRef value = fetchData(tableEntry.valuePage, tableEntry.metadata & MVALUECHAIN, &maxSize, NULL, NULL);
+    PageDataRef value = fetchData(tableEntry.valuePage, tableEntry.metadata & MVC_ISMULTIPLE, &maxSize, NULL, NULL);
 
     // Calculate actual size
     if (size!=NULL){
         *size = maxSize-tableEntry.remains;
     }
 
-    return value;
+    *valuePointRef = value;
+
+    return KVATException_none;
+}
+
+/**
+ * Returns pointer to string corresponding to a key. KVATRetrieveValue convenience.
+ *
+ * @param      key            String tag for the value to retrieve
+ * @param[out] valuePointRef  Reference to a pointer that will be set to point to retrieved string.
+ *                            Set to NULL if no match found.
+ *
+ * @return KVATException_ (invalidAccess) (notFound) (none)
+ */
+KVATException KVATRetrieveString(char* key, char** valuePointRef){
+    return KVATRetrieveValue(key, (void**) valuePointRef, NULL);
+}
+
+/**
+ * Deletes a saved value from storage
+ *
+ * @param      key            String tag for the value to delete
+ *
+ * @return KVATException_ (invalidAccess) (notFound) (none)
+ */
+KVATException KVATDeleteValue(char* key){
+    // Assert
+    if (!isInit || !key){return KVATException_invalidAccess;}
+
+    // Look for this thing
+    PageNumber tableEntryN = lookupByKey(key, false, 1);
+
+    if (tableEntryN==0){return KVATException_notFound;}
+
+    // Get entry
+    KVATKeyValueEntry tableEntry;
+    readTableEntry(&tableEntry, tableEntryN);
+
+    // Clear pages used in key and value from registry
+    followPageChainAndSetPageRecord(tableEntry.keyPage, false, tableEntry.metadata & MKC_ISMULTIPLE);
+    followPageChainAndSetPageRecord(tableEntry.valuePage, false, tableEntry.metadata & MVC_ISMULTIPLE);
+
+    // Change metadata
+    tableEntry.metadata = MDEFAULT;
+
+    // Save to end
+    saveTableEntry(&tableEntry, tableEntryN);
+
+    return KVATException_none;
 }
 
 //////////////////////////////////////////////////////////////////
 
-bool KVATInit(){
+KVATException KVATInit(){
+    if (isInit){return KVATException_invalidAccess;}
+
     // Enable the EEPROM module.
     SysCtlPeripheralEnable(SYSCTL_PERIPH_EEPROM0);
 
@@ -854,13 +943,13 @@ bool KVATInit(){
     uint32_t memInitStatus = EEPROMInit();
     if (memInitStatus==EEPROM_INIT_ERROR){
 
-        return false;
+        return KVATException_storageFault;
     }
 
     //Get space for the index
-    index = malloc(sizeof(KVATIndex));
+    index = malloc(sizeof(KVATIndex)); // Permanent allocation
 
-    if (index==NULL){return false;}
+    if (index==NULL){return KVATException_heapError;}
 
     // Read current index from system
     readIndex();
@@ -874,5 +963,5 @@ bool KVATInit(){
     updatePageRecord();
 
     isInit = true;
-    return true;
+    return KVATException_none;
 }

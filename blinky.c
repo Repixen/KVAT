@@ -52,19 +52,28 @@ __error__(char *pcFilename, uint32_t ui32Line)
 
 void kvatTest(){
 
-    KVATException xcpt = KVATSaveValue("rox", "12345678901234567890123456789012345678901234567890123456789A", 61);
+    KVATException xcpt = KVATSaveString("singKey", "12345678901234567890123456789012345678901234567890123456789A");
 
 
     KVATSize readSize;
 
-    char* greg = KVATRetrieveValue("rox", &readSize);
+    char* greg;
 
-    UARTprintf("<v>%s\n", greg);
+    xcpt = KVATRetrieveString("singKey", &greg);
 
-    UARTprintf("<s>%u\n", readSize);
+    if (!xcpt){
+        UARTprintf("<v>%s\n", (char*)greg);
+    }
 
-    UARTprintf("<s>%d\n", xcpt);
+    KVATDeleteValue("singKey");
 
+    xcpt = KVATRetrieveString("singKey", &greg);
+
+    if (!xcpt){
+        UARTprintf("<v>%s\n", (char*)greg);
+    }
+
+    free(greg);
 
 
     GPIOIntClear(GPIO_PORTJ_BASE, GPIO_PIN_0|GPIO_PIN_1);
@@ -115,8 +124,8 @@ int main(void){
     //
     GPIOPinTypeGPIOOutput(GPIO_PORTN_BASE, GPIO_PIN_0);
 
-    bool kvatStatus = KVATInit();
-    UARTprintf(kvatStatus ? "Init: Pass\n" : "Init Error\n");
+    KVATException kvatExc = KVATInit();
+    UARTprintf(kvatExc==KVATException_none ? "Init: Pass\n" : "Init Error\n");
 
 
     volatile uint32_t ui32Loop;

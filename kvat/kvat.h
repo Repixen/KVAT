@@ -9,6 +9,7 @@
 #ifndef KVAT_H_
 #define KVAT_H_
 
+#include <stdlib.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -18,16 +19,21 @@ typedef enum KVATException{
     KVATException_unknown,
     KVATException_invalidAccess,
     KVATException_notFound,
-    KVATException_insufficientSpace
+    KVATException_insufficientSpace,
+    KVATException_storageFault,
+    KVATException_heapError
 }KVATException;
 
 // Types
 typedef uint32_t KVATSize;
 
 // Functions
-bool KVATInit();
+KVATException KVATInit();
 KVATException KVATSaveValue(char* key, void* value, KVATSize valueSize);
-void* KVATRetrieveValue(char* key, KVATSize* size);
+KVATException KVATSaveString(char* key, char* value);
+KVATException KVATRetrieveValue(char* key, void** valuePointRef, KVATSize* size);
+KVATException KVATRetrieveString(char* key, char** valuePointRef);
+KVATException KVATDeleteValue(char* key);
 
 
 #endif /* KVAT_H_ */
