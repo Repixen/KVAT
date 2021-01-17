@@ -49,31 +49,76 @@ __error__(char *pcFilename, uint32_t ui32Line)
 }
 #endif
 
+bool test(char* title, KVATException exception){
+    UARTprintf("\n<test>%s:\n", title);
+
+    if (exception!=KVATException_none){
+        UARTprintf("     <KVATException> %d\n", exception);
+        return false;
+    }
+    UARTprintf("     (no exceptions)\n     ");
+    return true;
+}
+
 
 void kvatTest(){
 
-    KVATException xcpt = KVATSaveString("singKey", "12345678901234567890123456789012345678901234567890123456789A");
+    UARTprintf("============\nRunning Tests...\n\n");
 
+    char* ret;
 
-    KVATSize readSize;
+    // Save
+    test("Save String, with line break", KVATSaveString("singKey", "First string saved. \nMake sure it's on multiple pages."));
 
-    char* greg;
+    // Retrieve
+    if (test("Retrieve", KVATRetrieveString("singKey", &ret))){
+        UARTprintf("<v>%s\n", (char*)ret);
 
-    xcpt = KVATRetrieveString("singKey", &greg);
-
-    if (!xcpt){
-        UARTprintf("<v>%s\n", (char*)greg);
+        free(ret);
     }
 
-    KVATDeleteValue("singKey");
+    // Save with another key
+    test("Save string with route", KVATSaveString("second/key/this.h", "Contents of the string saved with route"));
 
-    xcpt = KVATRetrieveString("singKey", &greg);
+    // Retrieve
+    if (test("Retrieve string with route", KVATRetrieveString("second/key/this.h", &ret))){
+        UARTprintf("<v>%s\n", (char*)ret);
 
-    if (!xcpt){
-        UARTprintf("<v>%s\n", (char*)greg);
+        free(ret);
     }
 
-    free(greg);
+    if (test("Retrieve string with (wrong) route", KVATRetrieveString("second/key/this.c", &ret))){
+        UARTprintf("<v>%s\n", (char*)ret);
+
+        free(ret);
+    }
+
+    // Retrieve
+    if (test("Retrieve first string", KVATRetrieveString("singKey", &ret))){
+        UARTprintf("<v>%s\n", (char*)ret);
+
+        free(ret);
+    }
+
+    // Delete
+    test("Delete first string", KVATDeleteValue("singKey"));
+
+    // Retrieve Deleted
+    if (test("Retrieve Deleted first string", KVATRetrieveString("singKey", &ret))){
+        UARTprintf("<v>%s\n", (char*)ret);
+
+        free(ret);
+    }
+
+    // Retrieve
+    if (test("Retrieve string with route again", KVATRetrieveString("second/key/this.h", &ret))){
+        UARTprintf("<v>%s\n", (char*)ret);
+
+        free(ret);
+    }
+
+
+    UARTprintf("\nFinished testing\n============\n");
 
 
     GPIOIntClear(GPIO_PORTJ_BASE, GPIO_PIN_0|GPIO_PIN_1);

@@ -12,7 +12,7 @@
 //==========================================================
 // FORMATTING LIMITS
 
-#define FORMATID 201
+#define FORMATID 203
 #define PAGESIZE 8      // Pages need to be a multiple of 4 in size (max 256)
 #define PAGECOUNT 128   // 255 max on a single byte paging scheme
 
@@ -69,7 +69,8 @@ typedef uint32_t* PageDataRef;
 
 //==========================================================
 
-bool isInit = false;
+static void deinit();
+bool didInit = false;
 unsigned char* pageRecord = NULL;
 
 // Structs need to be a multiple of 4 bytes in size!!
@@ -94,10 +95,12 @@ typedef struct KVATIndex{
 
 static KVATIndex* index = NULL;
 
-static bool saveIndex(){
+static KVATException saveIndex(){
 
     // Produce a copy of the index to store
     uint32_t* indexCopy = malloc(sizeof(KVATIndex));
+    if (indexCopy==NULL){return KVATException_heapError;}
+
     memcpy(indexCopy, index, sizeof(KVATIndex));
 
     uint32_t programResult = EEPROMProgram(indexCopy, INDEXSTART, sizeof(KVATIndex));
@@ -105,28 +108,31 @@ static bool saveIndex(){
     // Free space from the copy
     free(indexCopy);
 
-    return !programResult;
+    if (programResult!=0){  // Something came up with EEPROMProgram
+        return KVATException_storageFault;
+    }
+
+    return KVATException_none;
 }
 
 /**
  * Reads stored index from storage into 'index'
  *
- * @return KVATException_ (none) (heapError)
+ * @return KVATException_ (none) (invalidAccess) (heapError)
  */
 static KVATException readIndex(){
+    if (index==NULL){return KVATException_invalidAccess;}
+
     // Read into compatible uint32_t buffer
     uint32_t* indexBuff = malloc(sizeof(KVATIndex));
+    if (indexBuff==NULL){return KVATException_heapError;}
     EEPROMRead(indexBuff, INDEXSTART, sizeof(KVATIndex));
 
     // Copy into actual index
-    if (index!=NULL){
-        memcpy(index, indexBuff, sizeof(KVATIndex));
+    memcpy(index, indexBuff, sizeof(KVATIndex));
 
-        // Get rid of buffer
-        free(indexBuff);
-    }else{
-        return KVATException_heapError;
-    }
+    // Get rid of buffer
+    free(indexBuff);
 
     return KVATException_none;
 }
@@ -149,8 +155,11 @@ static StorageAddress getEntryAddressFromPosition(PageNumber entryPosition){
  * @return Success of the save process. True if successful.
  */
 static bool saveTableEntry(KVATKeyValueEntry* entryToSave, PageNumber entryPosition){
+
     // Copy table entry into compatible uint32_t pointer
     uint32_t* entryCopy = malloc(sizeof(KVATKeyValueEntry));
+    if (entryCopy==NULL){return false;}
+
     memcpy(entryCopy, entryToSave, sizeof(KVATKeyValueEntry));
 
     // Get address of the table entry position to save in
@@ -165,9 +174,18 @@ static bool saveTableEntry(KVATKeyValueEntry* entryToSave, PageNumber entryPosit
     return !programResult;
 }
 
-static void readTableEntry(KVATKeyValueEntry* entryRead, PageNumber entryPosition){
+/**
+ * Reads only the section of the index pertaining to a single table entry into memory.
+ *
+ * @param      entryRead          Reference to a KVATKeyValueEntry instance to read into
+ * @param      entryPosition      The position of the entry in table to read.
+ *
+ * @return Success of the read process. True if successful.
+ */
+static bool readTableEntry(KVATKeyValueEntry* entryRead, PageNumber entryPosition){
     // Prepare buffer to read into
     uint32_t* entryBuff = malloc(sizeof(KVATKeyValueEntry));
+    if (entryBuff==NULL){return false;}
 
     // Get address of the table entry to read
     StorageAddress entryAddress = getEntryAddressFromPosition(entryPosition);
@@ -180,23 +198,27 @@ static void readTableEntry(KVATKeyValueEntry* entryRead, PageNumber entryPositio
 
     // Get rid of the read buffer
     free(entryBuff);
+
+    return true;
 }
 
 /**
  * Returns the number in the index table of an empty entry spot.
  * Note: 0 is reserved for invalid page.
  *
- * @return Number of the empty entry, or 0 if all full.
+ * @return Number of the empty entry, or 0 if all full (or fault).
  */
 static PageNumber getEmptyTableEntryNumber(){
-    // Get some local references of page count (algo number of table entries)
+    // Get some local references of page count (also number of table entries)
     PageNumber entryCount = index->pageCount;
 
     KVATKeyValueEntry entry;
+    bool didReadEntry;
 
     // Start checkin'
     for (PageNumber entryN = 1; entryN<entryCount; entryN++){
-        readTableEntry(&entry, entryN);
+        didReadEntry = readTableEntry(&entry, entryN);
+        if (!didReadEntry){break;}   // Sanity check: if at any point table read fails, abort.
 
         if (!(entry.metadata & (MACTIVE | MOPEN))){ // Check status to see if actually empty
             return entryN;
@@ -220,11 +242,11 @@ static StorageAddress getNaturalAddressOfPage0(){
  * (Writes empty index)
  * Should only be called by an init or a reformat operation.
  *
- * @return boolean of operation result. true on success.
+ * @return KVATException_ (none) (invalidAccess) (tableError) ...
  */
-static bool formatMemory(){
-    //GUARD - no formatting if initialized
-    if (isInit){return false;}
+static KVATException formatMemory(){
+    //GUARD - no formatting allowed if initialized
+    if (didInit){return KVATException_invalidAccess;}
 
     //Prepare index with formatting limits and paging region
     index->formatID = FORMATID;
@@ -234,9 +256,12 @@ static bool formatMemory(){
 
     KVATKeyValueEntry emptyEntry = {.metadata = MDEFAULT};
 
-    //Mark entries as empty (including invalid page 0)
+    bool didSaveEntry;
+
+    //Save entries as new (empty) (including invalid page 0)
     for (PageNumber entryN = 0; entryN<PAGECOUNT; entryN++){
-        saveTableEntry(&emptyEntry, entryN);
+        didSaveEntry = saveTableEntry(&emptyEntry, entryN);
+        if (!didSaveEntry){return KVATException_tableError;}
     }
 
     return saveIndex();
@@ -470,9 +495,11 @@ static void followPageChainAndSetPageRecord(PageNumber chainStart, bool isActive
 /**
  * Allocates space for pageRecord and traverses the tables to reflect the status of the pages.
  * Called during init process.
+ *
+ * @return boolean of operation result. true on success.
  */
-static void updatePageRecord(){
-    // Update might need more reallocation. If called after initial exploration, throwaway.
+static bool updatePageRecord(){
+    // Update might need reallocation. If called after initial exploration, throwaway.
     if (pageRecord!=NULL){
         free(pageRecord);
     }
@@ -480,6 +507,7 @@ static void updatePageRecord(){
     // Get memory to hold the page record
     KVATSize pageRecordSize = getPageRecordSize();
     pageRecord = malloc(pageRecordSize);    // Permanent allocation
+    if (pageRecord==NULL){return false;}
 
     // Set to 0's (empty)
     memset(pageRecord, 0, pageRecordSize);
@@ -491,9 +519,12 @@ static void updatePageRecord(){
     PageNumber numberOfEntries = index->pageCount;
     KVATKeyValueEntry entry;
 
+    bool didReadEntry;
+
     // Go through all table entries (starting at 1)
     for (PageNumber entryN = 1; entryN<numberOfEntries; entryN++){
-        readTableEntry(&entry, entryN);
+        didReadEntry = readTableEntry(&entry, entryN);
+        if (!didReadEntry){return false;}
 
         // Check if entry is active and follow chains for name and value to update records
         if (entry.metadata & MACTIVE){
@@ -503,6 +534,8 @@ static void updatePageRecord(){
             followPageChainAndSetPageRecord(entry.valuePage, true, entry.metadata & MVC_ISMULTIPLE);
         }
     }
+
+    return true;
 }
 
 //////////////////////////////////////////////////////////////////
@@ -520,7 +553,7 @@ static void updatePageRecord(){
  *                                           Note: if fetched data does not fit in this buffer, a separate memory region will be allocated.
  * @param      preallocBufferSize  Optional: The size of the preallocated buffer.
  *
- * @return Pointer to allocated buffer, or preallocated buffer if used.
+ * @return Pointer to allocated buffer, preallocated buffer if used, or NULL.
  */
 static PageDataRef fetchData(PageNumber startPage, bool isSinglePage, KVATSize* maxSize, PageDataRef preallocBuffer, KVATSize preallocBufferSize){
     //Get total size of chain
@@ -544,10 +577,13 @@ static PageDataRef fetchData(PageNumber startPage, bool isSinglePage, KVATSize* 
 
     // Make nice buffers. One to keep a single page, another to keep the whole data read, unless it fits in preallocBuffer.
     PageDataRef singlePage = malloc(index->pageSize);
-    PageDataRef record = (preallocBuffer!=NULL && preallocBufferSize>=recordSize) ? preallocBuffer : malloc(recordSize); // Returned allocation
+    if (singlePage==NULL){return NULL;}
 
-    // Add null terminator in extra byte
-    record[pageDataSize*pageCount] = '\0';
+    PageDataRef record = (preallocBuffer!=NULL && preallocBufferSize>=recordSize) ? preallocBuffer : malloc(recordSize); // Returnable allocation
+    if (record==NULL){free(singlePage); return NULL;}
+
+    // Add null terminator in extra byte (cast to char* so it's indexed by bytes)
+    ((char*)record)[pageDataSize*pageCount] = '\0';
 
     // Restart current page number
     currentPageN = startPage;
@@ -591,7 +627,7 @@ static PageDataRef fetchData(PageNumber startPage, bool isSinglePage, KVATSize* 
  * @param[out] wasSinglePage             Indicates if data was saved into a single page.
  * @param[out] remains                   Optional: Indicates how much space was left empty in the last page written.
  *
- * @return Number of first page in the chain. Returns 0 (illegal page) to indicate insufficient space to store or invalid call.
+ * @return Number of first page in the chain. Returns 0 (illegal page) to indicate insufficient space to store, invalid call, or error.
  */
 static PageNumber writeData(PageDataRef data, KVATSize size, PageNumber overwriteChainBeginning, bool isOverwriteChainSingle, bool* wasSinglePage, KVATSize* remains){
     if (size==0){return 0;}
@@ -612,9 +648,11 @@ static PageNumber writeData(PageDataRef data, KVATSize size, PageNumber overwrit
 
     // Get buffer to hold page data when assembling before saving
     PageDataRef pageData = malloc(index->pageSize);
+    if (pageData==NULL){return 0;}
 
     // Prepare places to keep track of the pages
     PageNumber* pagesUsed = malloc(sizeof(PageNumber)*pagesNeeded);
+    if (pagesUsed==NULL){free(pageData); return 0;}
     PageNumber thisPageN = 0;
     PageNumber nextPageN = overwriteChainBeginning ? overwriteChainBeginning : getEmptyPageNumber(true);
     PageNumber overwriteChainNext = overwriteChainBeginning ? overwriteChainBeginning : 0;// Next from last page used from overwritten chain, if any
@@ -717,16 +755,19 @@ static PageNumber lookupByKey(char* key, bool isPartialKey, PageNumber entryNumb
     KVATKeyValueEntry entry;                    // Used to store current entry
     int keyCompare;
     KVATSize entryKeySize;
+    bool didReadEntry;
     for (PageNumber entryN = entryNumberSearchStart ? entryNumberSearchStart : 1; entryN<entryCount; entryN++){
 
         // Read entry from storage
-        readTableEntry(&entry, entryN);
+        didReadEntry = readTableEntry(&entry, entryN);
+        if (!didReadEntry){break;} // If readTableEntry fails, abort.
 
         // Check if entry is active
         if (entry.metadata & MACTIVE){
 
             // Fetch the key
             entryKey = (char*)fetchData(entry.keyPage, entry.metadata & MKC_ISMULTIPLE, NULL, (PageDataRef)entryKeyPreallocBuff, STRINGKEYSTDLEN);
+            if (entryKey==NULL){break;} // If fetchData fails, abort.
 
             // Check key
             entryKeySize = strlen(entryKey);
@@ -748,7 +789,6 @@ static PageNumber lookupByKey(char* key, bool isPartialKey, PageNumber entryNumb
                 }
             }
 
-
         }
     }
 
@@ -765,10 +805,10 @@ static PageNumber lookupByKey(char* key, bool isPartialKey, PageNumber entryNumb
  * @param      value          Reference to value to save in storage
  * @param      valueSize      Length of the value to save
  *
- * @return KVATException_ (insufficientSpace) (none)
+ * @return KVATException_ (invalidAccess) (insufficientSpace) (tableError) (none)
  */
 KVATException KVATSaveValue(char* key, void* value, KVATSize valueSize){
-    if (!isInit || !key){return KVATException_invalidAccess;}
+    if (!didInit || !key){return KVATException_invalidAccess;}
 
     // Get empty table entry for new, or existing for overwrite
     PageNumber tableEntryN = lookupByKey(key, false, 1);   // Look for same string (overwrite)
@@ -783,12 +823,14 @@ KVATException KVATSaveValue(char* key, void* value, KVATSize valueSize){
     // Get local table entry. No need to read the entry's current value from storage if not overwriting -it's empty-
     KVATKeyValueEntry tableEntry = {};
     if (isOverwrite){
-        readTableEntry(&tableEntry, tableEntryN);
+        bool didReadEntry = readTableEntry(&tableEntry, tableEntryN);
+        if (!didReadEntry){return KVATException_tableError;}
     }
 
     // Set is as open and save with that status
     tableEntry.metadata |= MOPEN;   // All that matters is that it's open, but keep old stuff in case of overwrite
-    saveTableEntry(&tableEntry, tableEntryN);
+    bool didSaveEntry = saveTableEntry(&tableEntry, tableEntryN);
+    if (!didSaveEntry){return KVATException_tableError;}
 
     bool keySavedInSinglePage, valueSavedInSinglePage;
     KVATSize valueRemains;
@@ -825,18 +867,19 @@ KVATException KVATSaveValue(char* key, void* value, KVATSize valueSize){
     tableEntry.remains = valueRemains;
 
     // Save entry to storage
-    saveTableEntry(&tableEntry, tableEntryN);
+    didSaveEntry = saveTableEntry(&tableEntry, tableEntryN);
+    if (!didSaveEntry){deinit(); return KVATException_tableError;}  // If saveTableEntry fails at this point, it can be fatal. de-initialize.
 
     return KVATException_none;
 }
 
 /**
- * Saves a string of data tagged with a key
+ * Saves a string of data tagged with a key. KVATSaveValue convenience.
  *
  * @param      key            String tag for the value to save
  * @param      value          Reference to string to save
  *
- * @return KVATException_ (insufficientSpace) (none)
+ * @return KVATException_ ... See KVATSaveValue
  */
 KVATException KVATSaveString(char* key, char* value){
     return KVATSaveValue(key, (void*) value, strlen(value)+1); // Add 1 to length to save null terminator
@@ -846,32 +889,37 @@ KVATException KVATSaveString(char* key, char* value){
 //  PUBLIC RETRIEVE
 
 /**
- * Returns pointer to value corresponding to a key
+ * Returns pointer to value corresponding to specified key.
+ * Warning: possible memory leak. Returned pointer is referencing memory from heap. Required to free when appropriate.
  *
  * @param      key            String tag for the value to retrieve
  * @param[out] valuePointRef  Reference to a pointer that will be set to point to retrieved value.
  *                            Set to NULL if no match found.
  * @param[out] size           Optional: Size of the value returned in bytes.
  *
- * @return KVATException_ (invalidAccess) (notFound) (none)
+ * @return KVATException_ (invalidAccess) (notFound) (tableError) (fetchFault) (none)
  */
 KVATException KVATRetrieveValue(char* key, void** valuePointRef, KVATSize* size){
     // Assert
-    if (!isInit || !key){return KVATException_invalidAccess;}
+    if (!didInit || !key){return KVATException_invalidAccess;}
+
+    // Reset inout return
+    *valuePointRef = NULL;
 
     // Look for this thing
-    PageNumber tableEntryN = lookupByKey(key, false, 1);   // Look for same string (overwrite)
-
-    if (tableEntryN==0){*valuePointRef = NULL; return KVATException_notFound;}
+    PageNumber tableEntryN = lookupByKey(key, false, 1);   // Look for same string. See if we need to overwrite.
+    if (tableEntryN==0){return KVATException_notFound;}
 
     // Get entry
     KVATKeyValueEntry tableEntry;
-    readTableEntry(&tableEntry, tableEntryN);
+    bool didReadEntry = readTableEntry(&tableEntry, tableEntryN);
+    if (!didReadEntry){return KVATException_tableError;}
 
     KVATSize maxSize = 0;
 
     // Read value
     PageDataRef value = fetchData(tableEntry.valuePage, tableEntry.metadata & MVC_ISMULTIPLE, &maxSize, NULL, NULL);
+    if (value==NULL){return KVATException_fetchFault;}
 
     // Calculate actual size
     if (size!=NULL){
@@ -888,13 +936,16 @@ KVATException KVATRetrieveValue(char* key, void** valuePointRef, KVATSize* size)
  *
  * @param      key            String tag for the value to retrieve
  * @param[out] valuePointRef  Reference to a pointer that will be set to point to retrieved string.
- *                            Set to NULL if no match found.
+ *                              Set to NULL if no match found.
  *
- * @return KVATException_ (invalidAccess) (notFound) (none)
+ * @return KVATException_ ... See KVATRetrieveValue
  */
 KVATException KVATRetrieveString(char* key, char** valuePointRef){
     return KVATRetrieveValue(key, (void**) valuePointRef, NULL);
 }
+
+//////////////////////////////////////////////////////////////////
+//  PUBLIC DELETE
 
 /**
  * Deletes a saved value from storage
@@ -905,7 +956,7 @@ KVATException KVATRetrieveString(char* key, char** valuePointRef){
  */
 KVATException KVATDeleteValue(char* key){
     // Assert
-    if (!isInit || !key){return KVATException_invalidAccess;}
+    if (!didInit || !key){return KVATException_invalidAccess;}
 
     // Look for this thing
     PageNumber tableEntryN = lookupByKey(key, false, 1);
@@ -914,7 +965,8 @@ KVATException KVATDeleteValue(char* key){
 
     // Get entry
     KVATKeyValueEntry tableEntry;
-    readTableEntry(&tableEntry, tableEntryN);
+    bool didReadEntry = readTableEntry(&tableEntry, tableEntryN);
+    if (!didReadEntry){return KVATException_tableError;}
 
     // Clear pages used in key and value from registry
     followPageChainAndSetPageRecord(tableEntry.keyPage, false, tableEntry.metadata & MKC_ISMULTIPLE);
@@ -924,15 +976,22 @@ KVATException KVATDeleteValue(char* key){
     tableEntry.metadata = MDEFAULT;
 
     // Save to end
-    saveTableEntry(&tableEntry, tableEntryN);
+    bool didSaveEntry = saveTableEntry(&tableEntry, tableEntryN);
+    if (!didSaveEntry){return KVATException_tableError;}
 
     return KVATException_none;
 }
 
 //////////////////////////////////////////////////////////////////
 
+/**
+ * Initializes kvat for operation. Formats EEPROM on Format ID mismatch (before first formatting or after format invalidation).
+ * Must be called before
+ *
+ * @return KVATException_ (invalidAccess) (storageFault) (heapError) (recordFault) (none) ...
+ */
 KVATException KVATInit(){
-    if (isInit){return KVATException_invalidAccess;}
+    if (didInit){return KVATException_invalidAccess;}
 
     // Enable the EEPROM module.
     SysCtlPeripheralEnable(SYSCTL_PERIPH_EEPROM0);
@@ -947,21 +1006,33 @@ KVATException KVATInit(){
     }
 
     //Get space for the index
-    index = malloc(sizeof(KVATIndex)); // Permanent allocation
-
-    if (index==NULL){return KVATException_heapError;}
+    if (index==NULL){
+        index = malloc(sizeof(KVATIndex)); // Permanent allocation
+        if (index==NULL){return KVATException_heapError;}
+    }
 
     // Read current index from system
     readIndex();
 
     //Check format ID
     if (index->formatID!=FORMATID){// Need to format memory
-        formatMemory();
+        KVATException formatException = formatMemory();
+        if (formatException!=KVATException_none){   // There was an exception while formatting. Bubble it up.
+            return formatException;
+        }
     }
 
-    // Get page record
-    updatePageRecord();
+    // Create page record for runtime empty page finding
+    bool wasRecordUpdated = updatePageRecord();
+    if (!wasRecordUpdated){return KVATException_recordFault;}
 
-    isInit = true;
+    didInit = true;
     return KVATException_none;
+}
+
+/**
+ * Internal release for major fault. Call upon the occurrence of an unrecoverable error to prevent further damage.
+ */
+static void deinit(){
+    didInit = false;
 }

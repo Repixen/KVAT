@@ -20,7 +20,7 @@ The sources for KVAT are located in the kvat folder. The enclosing CC project is
 
 Upon running on actual hardware, the project calls KVATInit(), sets up the onboard user switches for interaction, and prepares uartstdio for output through a serial terminal.
 
-## Example Use
+## Example
 
 ```c
 KVATException initExc = KVATInit();
