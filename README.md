@@ -16,7 +16,7 @@ KVATException result = KVATSaveString("key", "value");
 
 ## Project
 
-The sources for KVAT are located in the kvat folder. The enclosing CC project is intended as a playground for development and testing. It is based on the Blinky example project for the ek-tm4c129exl board.
+The sources for KVAT are located in the kvat folder. The enclosing CCS project is intended as a playground for development and testing. It is based on the Blinky example project for the EK-TM4C129EXL board.
 
 Upon running on actual hardware, the project calls KVATInit(), sets up the onboard user switches for interaction, and prepares uartstdio for output through a serial terminal.
 
@@ -32,4 +32,4 @@ if (initExc == KVATException_none){
 
 ## Development
 
-As the project is in it's early development stage, future commits can change the public interface.
+As the project is in it's early development stage, future commits might change the public interface.

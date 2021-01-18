@@ -1,7 +1,10 @@
 /*
  * kvat.c
+ * KVAT - Key Value Address Table
+ * Dictionary-like file system intended for internal EEPROM
  *
- *      Author: repixen
+ * Author: repixen
+ * repixen 2020-2021
  */
 #include <kvat/kvat.h>
 
@@ -12,9 +15,11 @@
 //==========================================================
 // FORMATTING LIMITS
 
-#define FORMATID 203
-#define PAGESIZE 8      // Pages need to be a multiple of 4 in size (max 256)
-#define PAGECOUNT 128   // 255 max on a single byte paging scheme
+#define FORMATID 204    // Persistence marker for formatting. Mismatch from storage will invalidate it.
+#define PAGESIZE 8      // Size of a single page in bytes. Pages need to be a multiple of 4 bytes in size (256 max on single-byte-remains scheme)
+#define PAGECOUNT 128   // 255 max on a single-byte-paging scheme
+
+// NOTE: Current implementation scheme is single-byte-paging and single-byte-remains (usable storage on max: 65KB)
 
 //==========================================================
 // GENERAL LIMITS
@@ -53,13 +58,13 @@
 // KEY FORMAT
 #define MKEYFORMAT      0x30    // Mask
 #define MKF_STRING      0x00    // String
-//#define MKF_UINT32       0x10    // Unsigned int
-//#define MKF_             0x20    // (undefined)
-//#define MKF_             0x30    // (undefined)
-
+//#define MKF_UINT32      0x10    // Unsigned int
+//#define MKF_            0x20    // (undefined)
+//#define MKF_            0x30    // (undefined)
 
 
 //==========================================================
+// Internal types
 
 typedef unsigned char MetaData;
 typedef unsigned char PageNumber;
@@ -68,13 +73,10 @@ typedef uint32_t PageData;
 typedef uint32_t* PageDataRef;
 
 //==========================================================
-
-static void deinit();
-bool didInit = false;
-unsigned char* pageRecord = NULL;
-
+// Index and table
 // Structs need to be a multiple of 4 bytes in size!!
 
+// Entry in index table
 // Multiple of 4 by design
 typedef struct KVATKeyValueEntry{
     MetaData metadata;
@@ -83,17 +85,25 @@ typedef struct KVATKeyValueEntry{
     unsigned char remains; // Number of bytes that the value should be truncated from max page-chain (data) size
 }KVATKeyValueEntry;
 
+// Index (header portion)
 // Multiple of 4 by alignment
 // The table is part of the index, but never loaded or saved from storage entirely. Entries from table should be handled individually.
 typedef struct KVATIndex{
     uint16_t formatID;
     KVATSize pageSize;
     PageNumber pageCount;
-    StorageAddress pageBeginAddress;   // Since this is 4 byte aligned, the table (next) will be as well
+    StorageAddress pageBeginAddress;   // Since this is 4 byte and 4-byte-aligned, the table (next) will be as well
     //KVATKeyValueEntry table[PAGECOUNT];
 }KVATIndex;
 
-static KVATIndex* index = NULL;
+//==========================================================
+
+static KVATIndex* index = NULL;             // Runtime instance of KVATIndex, loaded into memory by readIndex()
+static void deinit();                       // Major fail safe. Call upon an unrecoverable exception to void runtime.
+static bool didInit = false;
+static unsigned char* pageRecord = NULL;
+
+//==========================================================
 
 static KVATException saveIndex(){
 
@@ -798,15 +808,6 @@ static PageNumber lookupByKey(char* key, bool isPartialKey, PageNumber entryNumb
 //////////////////////////////////////////////////////////////////
 //  PUBLIC SAVE
 
-/**
- * Saves data tagged with a key
- *
- * @param      key            String tag for the value to save
- * @param      value          Reference to value to save in storage
- * @param      valueSize      Length of the value to save
- *
- * @return KVATException_ (invalidAccess) (insufficientSpace) (tableError) (none)
- */
 KVATException KVATSaveValue(char* key, void* value, KVATSize valueSize){
     if (!didInit || !key){return KVATException_invalidAccess;}
 
@@ -888,17 +889,6 @@ KVATException KVATSaveString(char* key, char* value){
 //////////////////////////////////////////////////////////////////
 //  PUBLIC RETRIEVE
 
-/**
- * Returns pointer to value corresponding to specified key.
- * Warning: possible memory leak. Returned pointer is referencing memory from heap. Required to free when appropriate.
- *
- * @param      key            String tag for the value to retrieve
- * @param[out] valuePointRef  Reference to a pointer that will be set to point to retrieved value.
- *                            Set to NULL if no match found.
- * @param[out] size           Optional: Size of the value returned in bytes.
- *
- * @return KVATException_ (invalidAccess) (notFound) (tableError) (fetchFault) (none)
- */
 KVATException KVATRetrieveValue(char* key, void** valuePointRef, KVATSize* size){
     // Assert
     if (!didInit || !key){return KVATException_invalidAccess;}
@@ -931,15 +921,6 @@ KVATException KVATRetrieveValue(char* key, void** valuePointRef, KVATSize* size)
     return KVATException_none;
 }
 
-/**
- * Returns pointer to string corresponding to a key. KVATRetrieveValue convenience.
- *
- * @param      key            String tag for the value to retrieve
- * @param[out] valuePointRef  Reference to a pointer that will be set to point to retrieved string.
- *                              Set to NULL if no match found.
- *
- * @return KVATException_ ... See KVATRetrieveValue
- */
 KVATException KVATRetrieveString(char* key, char** valuePointRef){
     return KVATRetrieveValue(key, (void**) valuePointRef, NULL);
 }
@@ -947,13 +928,6 @@ KVATException KVATRetrieveString(char* key, char** valuePointRef){
 //////////////////////////////////////////////////////////////////
 //  PUBLIC DELETE
 
-/**
- * Deletes a saved value from storage
- *
- * @param      key            String tag for the value to delete
- *
- * @return KVATException_ (invalidAccess) (notFound) (none)
- */
 KVATException KVATDeleteValue(char* key){
     // Assert
     if (!didInit || !key){return KVATException_invalidAccess;}
@@ -984,12 +958,6 @@ KVATException KVATDeleteValue(char* key){
 
 //////////////////////////////////////////////////////////////////
 
-/**
- * Initializes kvat for operation. Formats EEPROM on Format ID mismatch (before first formatting or after format invalidation).
- * Must be called before
- *
- * @return KVATException_ (invalidAccess) (storageFault) (heapError) (recordFault) (none) ...
- */
 KVATException KVATInit(){
     if (didInit){return KVATException_invalidAccess;}
 
