@@ -811,7 +811,7 @@ static PageNumber lookupByKey(char* key, bool isPartialKey, PageNumber entryNumb
 KVATException KVATSaveValue(char* key, void* value, KVATSize valueSize){
     if (!didInit || !key){return KVATException_invalidAccess;}
 
-    // Get empty table entry for new, or existing for overwrite
+    // Get table entry for new, or existing for overwrite
     PageNumber tableEntryN = lookupByKey(key, false, 1);   // Look for same string (overwrite)
     bool isOverwrite = true;
     if (tableEntryN==0){
@@ -821,7 +821,7 @@ KVATException KVATSaveValue(char* key, void* value, KVATSize valueSize){
     // Guard
     if (tableEntryN==0){return KVATException_insufficientSpace;}
 
-    // Get local table entry. No need to read the entry's current value from storage if not overwriting -it's empty-
+    // Get table entry into a local variable. No need to read the entry's current value from storage if not overwriting -it's empty-
     KVATKeyValueEntry tableEntry = {};
     if (isOverwrite){
         bool didReadEntry = readTableEntry(&tableEntry, tableEntryN);

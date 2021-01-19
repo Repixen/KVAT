@@ -75,7 +75,7 @@ void kvatTest(){
     char* ret;
 
     // Save
-    test("Save String, with line break", KVATSaveString("singKey", "First string saved. \nMake sure it's on multiple pages."), false);
+    test("Save String, with line break", false, KVATSaveString("singKey", "First string saved. \nMake sure it's on multiple pages."));
 
     // Retrieve
     if (test("Retrieve", false, KVATRetrieveString("singKey", &ret))){
@@ -85,7 +85,7 @@ void kvatTest(){
     }
 
     // Save with another key
-    test("Save string with route", KVATSaveString("second/key/this.h", "Contents of the string saved with route"), false);
+    test("Save string with route", false, KVATSaveString("second/key/this.h", "Contents of the string saved with route"));
 
     // Retrieve
     if (test("Retrieve string with route", false, KVATRetrieveString("second/key/this.h", &ret))){
