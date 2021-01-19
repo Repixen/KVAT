@@ -6,11 +6,15 @@
  * Author: repixen
  * repixen 2020-2021
  */
-#include <kvat/kvat.h>
+
+#include "kvat/kvat.h"
 
 #include <string.h>
 #include <driverlib/sysctl.h>
 #include <driverlib/eeprom.h>
+
+#include "driverlib/rom.h"      // To use TivaWare contained in ROM
+#include "driverlib/rom_map.h"  //
 
 //==========================================================
 // FORMATTING LIMITS
@@ -113,7 +117,7 @@ static KVATException saveIndex(){
 
     memcpy(indexCopy, index, sizeof(KVATIndex));
 
-    uint32_t programResult = EEPROMProgram(indexCopy, INDEXSTART, sizeof(KVATIndex));
+    uint32_t programResult = MAP_EEPROMProgram(indexCopy, INDEXSTART, sizeof(KVATIndex));
 
     // Free space from the copy
     free(indexCopy);
@@ -136,7 +140,7 @@ static KVATException readIndex(){
     // Read into compatible uint32_t buffer
     uint32_t* indexBuff = malloc(sizeof(KVATIndex));
     if (indexBuff==NULL){return KVATException_heapError;}
-    EEPROMRead(indexBuff, INDEXSTART, sizeof(KVATIndex));
+    MAP_EEPROMRead(indexBuff, INDEXSTART, sizeof(KVATIndex));
 
     // Copy into actual index
     memcpy(index, indexBuff, sizeof(KVATIndex));
@@ -176,7 +180,7 @@ static bool saveTableEntry(KVATKeyValueEntry* entryToSave, PageNumber entryPosit
     StorageAddress entryAddress = getEntryAddressFromPosition(entryPosition);
 
     // Program the entry into storage
-    uint32_t programResult = EEPROMProgram(entryCopy, entryAddress, sizeof(KVATKeyValueEntry));
+    uint32_t programResult = MAP_EEPROMProgram(entryCopy, entryAddress, sizeof(KVATKeyValueEntry));
 
     // Get rid of the memory for copy
     free(entryCopy);
@@ -201,7 +205,7 @@ static bool readTableEntry(KVATKeyValueEntry* entryRead, PageNumber entryPositio
     StorageAddress entryAddress = getEntryAddressFromPosition(entryPosition);
 
     // Read entry from storage
-    EEPROMRead(entryBuff, entryAddress, sizeof(KVATKeyValueEntry));
+    MAP_EEPROMRead(entryBuff, entryAddress, sizeof(KVATKeyValueEntry));
 
     // Copy read data into the right place
     memcpy(entryRead, entryBuff, sizeof(KVATKeyValueEntry));
@@ -307,7 +311,7 @@ static void readPage(PageDataRef pageData, PageNumber pageNumber, uint32_t limit
     StorageAddress pageAddress = getPageAddress(pageNumber);
 
     // Read from address
-    EEPROMRead(pageData, pageAddress, limitReadSize ? limitReadSize : index->pageSize);
+    MAP_EEPROMRead(pageData, pageAddress, limitReadSize ? limitReadSize : index->pageSize);
 }
 
 /**
@@ -322,7 +326,7 @@ static bool writePage(PageDataRef pageData, PageNumber pageNumber){
     StorageAddress pageAddress = getPageAddress(pageNumber);
 
     // Write to address
-    uint32_t programResult = EEPROMProgram(pageData, pageAddress, index->pageSize);
+    uint32_t programResult = MAP_EEPROMProgram(pageData, pageAddress, index->pageSize);
 
     return !programResult;
 }
@@ -962,12 +966,12 @@ KVATException KVATInit(){
     if (didInit){return KVATException_invalidAccess;}
 
     // Enable the EEPROM module.
-    SysCtlPeripheralEnable(SYSCTL_PERIPH_EEPROM0);
+    MAP_SysCtlPeripheralEnable(SYSCTL_PERIPH_EEPROM0);
 
     // Wait for the EEPROM module to be ready.
-    while(!SysCtlPeripheralReady(SYSCTL_PERIPH_EEPROM0));
+    while(!MAP_SysCtlPeripheralReady(SYSCTL_PERIPH_EEPROM0));
 
-    uint32_t memInitStatus = EEPROMInit();
+    uint32_t memInitStatus = MAP_EEPROMInit();
     if (memInitStatus==EEPROM_INIT_ERROR){
 
         return KVATException_storageFault;

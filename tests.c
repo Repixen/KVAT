@@ -1,9 +1,9 @@
 /*
- * blinky.c
+ * tests.c
  * KVAT - Key Value Address Table
  *
  * Development and testing playground for KVAT.
- * Inspired by blinky.c included in the Blinky example project.
+ * Inspired by blinky.c included in the TivaWare Blinky example project.
  *
  * Author: repixen
  * repixen 2020-2021
@@ -17,7 +17,7 @@
 #include "driverlib/gpio.h"
 #include "driverlib/sysctl.h"
 
-#include "drivers/pinout.h"
+#include "drivers/board_setup.h"
 #include "utils/uartstdio.h"
 #include "utils/ustdlib.h"
 #include "kvat/kvat.h"
@@ -149,7 +149,8 @@ int main(void){
                                            SYSCTL_USE_PLL |
                                            SYSCTL_CFG_VCO_240), 120000000);
 
-    PinoutSet(false, false);
+    // Setup board pins
+    boardSetup(&kvatTest);
 
     //
     // Initialize the UART, clear the terminal, and print banner.
@@ -159,19 +160,6 @@ int main(void){
     UARTprintf("KVAT 0.1\n");
 
 
-    // Register J0 interrupt
-    GPIOIntRegister(GPIO_PORTJ_BASE, &kvatTest);
-
-    // This is basically GPIOPinTypeGPIOInput, but we can't just call it because it doesn't configure the pull-up J0 needs. Need to do it manually.
-    GPIODirModeSet(GPIO_PORTJ_BASE, GPIO_PIN_0, GPIO_DIR_MODE_IN);
-    GPIOPadConfigSet(GPIO_PORTJ_BASE, GPIO_PIN_0, GPIO_STRENGTH_2MA, GPIO_PIN_TYPE_STD_WPU);
-
-    // Set Interrupt type and enable
-    GPIOIntTypeSet(GPIO_PORTJ_BASE, GPIO_PIN_0, GPIO_RISING_EDGE);
-    GPIOIntEnable(GPIO_PORTJ_BASE, GPIO_PIN_0);
-
-    // Set PN1 as output for LED
-    GPIOPinTypeGPIOOutput(GPIO_PORTN_BASE, GPIO_PIN_1);
 
     // Init KVAT for testing
     KVATException kvatExc = KVATInit();
