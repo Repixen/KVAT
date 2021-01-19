@@ -6,10 +6,9 @@
  * Inspired by pinout.c included in TivaWare drivers.
  *
  * Author: repixen
- * repixen 2021
+ * Copyright (c) 2020-2021, repixen. All rights reserved.
  */
 
-#include <drivers/board_setup.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include "inc/hw_gpio.h"
@@ -18,6 +17,7 @@
 #include "driverlib/gpio.h"
 #include "driverlib/pin_map.h"
 #include "driverlib/sysctl.h"
+#include "drivers/board_setup.h"
 
 #include "driverlib/rom.h"      // To use TivaWare contained in ROM
 #include "driverlib/rom_map.h"  //

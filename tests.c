@@ -6,7 +6,7 @@
  * Inspired by blinky.c included in the TivaWare Blinky example project.
  *
  * Author: repixen
- * repixen 2020-2021
+ * Copyright (c) 2020-2021, repixen. All rights reserved.
  */
 
 #include <kvat/kvat.h>

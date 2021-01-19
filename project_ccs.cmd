@@ -1,7 +1,7 @@
 /******************************************************************************
  *
  * project_ccs.cmd - CCS linker configuration file for project.
- 					 Adapted for EK-TM4C129EXL.
+ *                   Adapted for EK-TM4C129EXL.
  *
  * Copyright (c) 2013-2020 Texas Instruments Incorporated.  All rights reserved.
  * Software License Agreement

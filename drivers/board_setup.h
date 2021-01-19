@@ -6,7 +6,7 @@
  * Inspired by pinout.c included in TivaWare drivers.
  *
  * Author: repixen
- * repixen 2021
+ * Copyright (c) 2020-2021, repixen. All rights reserved.
  */
 
 #ifndef _DRIVERS_BOARDSETUP_H_
