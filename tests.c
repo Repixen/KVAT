@@ -22,6 +22,9 @@
 #include "utils/ustdlib.h"
 #include "kvat/kvat.h"
 
+#include "driverlib/rom.h"      // To use TivaWare contained in ROM
+#include "driverlib/rom_map.h"  //
+
 
 // The error routine that is called if the driver library encounters an error.
 #ifdef DEBUG
@@ -128,7 +131,7 @@ void kvatTest(){
     UARTprintf("\nFinished testing\n============\n");
 
 
-    GPIOIntClear(GPIO_PORTJ_BASE, GPIO_PIN_0|GPIO_PIN_1);
+    MAP_GPIOIntClear(GPIO_PORTJ_BASE, GPIO_PIN_0|GPIO_PIN_1);
 }
 
 /**
@@ -144,7 +147,7 @@ int main(void){
     // Note: SYSCTL_CFG_VCO_240 is a new setting provided in TivaWare 2.2.x and
     // later to better reflect the actual VCO speed due to SYSCTL#22.
     //
-    ui32SysClock = SysCtlClockFreqSet((SYSCTL_XTAL_25MHZ |
+    ui32SysClock = MAP_SysCtlClockFreqSet((SYSCTL_XTAL_25MHZ |
                                            SYSCTL_OSC_MAIN |
                                            SYSCTL_USE_PLL |
                                            SYSCTL_CFG_VCO_240), 120000000);
@@ -169,9 +172,9 @@ int main(void){
     uint8_t pinStatus = GPIO_PIN_1;
     while(1){
 
-        GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_1, pinStatus);
+        MAP_GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_1, pinStatus);
         pinStatus ^= GPIO_PIN_1;
-        SysCtlDelay(8000000);
+        MAP_SysCtlDelay(8000000);
 
     }
 }
