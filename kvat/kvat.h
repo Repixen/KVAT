@@ -64,27 +64,52 @@ KVATException KVATSaveString(char* key, char* value);
 
 /**
  * Returns pointer to value corresponding to specified key.
- * Warning: possible memory leak. Returned pointer is referencing memory from heap. Free when appropriate.
+ * Supports passing reference to a buffer to read data into, as well as allowing for memory to be specifically allocated for.
+ * Warning: danger of memory leak on allocate mode. Returned pointer is referencing memory from heap. Free when appropriate.
  *
- * @param      key            String tag for the value to retrieve
- * @param[out] valuePointRef  Reference to a pointer that will be set to point to retrieved value.
- *                            Set to NULL if no match found.
- * @param[out] size           Optional: Size of the value returned in bytes.
+ * @param      key                  String tag for the value to retrieve
+ * @param[out] retrieveBuffer       Reference to buffer to retrieve value into.
+ * @param      retrieveBufferSize   Size of retrieve buffer.
+ * @param[out] valuePointRef        Optional: Reference to a pointer that will be set to point to retrieved data. Useful on allocate mode.
+ *                                  Gets set to NULL if no match found.
+ *                                  To use allocate mode, pass NULL on retrieveBuffer and retrieveBufferSize, and a valid argument on valuePointRef.
+ * @param[out] size                 Optional: Size of the value fetched in bytes.
  *
  * @return KVATException_ (invalidAccess) (notFound) (tableError) (fetchFault) (none)
  */
-KVATException KVATRetrieveValue(char* key, void** valuePointRef, KVATSize* size);
+KVATException KVATRetrieveValue(char* key, void* retrieveBuffer, KVATSize retrieveBufferSize, void** retrievePointerRef, KVATSize* size);
 
 /**
- * Returns pointer to string corresponding to a key. KVATRetrieveValue convenience.
+ * Returns pointer to string (in heap) corresponding to a key. KVATRetrieveValue convenience.
  *
  * @param      key            String tag for the value to retrieve
  * @param[out] valuePointRef  Reference to a pointer that will be set to point to retrieved string.
- *                              Set to NULL if no match found.
+ *                            Set to NULL if no match found.
+ *                            Free memory when appropriate.
  *
  * @return KVATException_ ... See KVATRetrieveValue
  */
-KVATException KVATRetrieveString(char* key, char** valuePointRef);
+KVATException KVATRetrieveStringByAllocation(char* key, char** valuePointerRef);
+
+/**
+ * Retrieves string corresponding to a key into a buffer. KVATRetrieveValue convenience.
+ *
+ * @param      key             String tag for the value to retrieve
+ * @param[out] retrieveBuffer  Reference to buffer to retrieve string into.
+ *
+ * @return KVATException_ ... See KVATRetrieveValue
+ */
+KVATException KVATRetrieveStringByBuffer(char* key, char* retrieveBuffer, KVATSize retrieveBufferSize);
+
+/**
+ * Changes the key that labels a value.
+ *
+ * @param      currentKey      Current key.
+ * @param      newKey          New key to change into.
+ *
+ * @return KVATException_ (invalidAccess) (notFound) (tableError) (unknown) (insufficientSpace) (none)
+ */
+KVATException KVATChangeKey(char* currentKey, char* newKey);
 
 /**
  * Deletes a saved value from storage

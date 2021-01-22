@@ -77,56 +77,61 @@ void kvatTest(){
 
     char* ret;
 
-    test("Save String", false, KVATSaveString("singKey", "First."));
+    // Save first string
+    test("Save string", false, KVATSaveString("singKey", "First."));
 
-    // Save
-    test("Overwrite String with longer one", false, KVATSaveString("singKey", "First string."));
+    // Save another string
+    test("Save another string", false, KVATSaveString("secondstuff", "This is the second stuff!"));
 
-    // Overwrite
-    test("Overwrite string with even longer one", false, KVATSaveString("singKey", "First string. Now it's longer."));
+    // overwrite first string
+    test("Overwrite first string with longer one", false, KVATSaveString("singKey", "First. This part is new."));
 
-    // Retrieve
-    if (test("Retrieve", false, KVATRetrieveString("singKey", &ret))){
+    // overwrite first string again
+    test("Overwrite first string with even longer one", false, KVATSaveString("singKey", "First. This part is new. This is newer."));
+
+    // Retrieve first string
+    if (test("Retrieve first string", false, KVATRetrieveStringByAllocation("singKey", &ret))){
         UARTprintf("<v>%s\n", (char*)ret);
 
         free(ret);
     }
 
-    // Save with another key
+    // Save with route
     test("Save string with route", false, KVATSaveString("second/key/this.h", "Contents of the string saved with route"));
 
+    // Retrieve with route
+    if (test("Retrieve string with route", false, KVATRetrieveStringByAllocation("second/key/this.h", &ret))){
+        UARTprintf("<v>%s\n", (char*)ret);
+
+        free(ret);
+    }
+
+    // Retrieve with wrong route
+    if (test("Retrieve string with (wrong) route", true, KVATRetrieveStringByAllocation("second/key/this.c", &ret))){
+        UARTprintf("<v>%s\n", (char*)ret);
+
+        free(ret);
+    }
+
+    // Retrieve first string again
+    if (test("Retrieve first string again", false, KVATRetrieveStringByAllocation("singKey", &ret))){
+        UARTprintf("<v>%s\n", (char*)ret);
+
+        free(ret);
+    }
+
+    // Rename second string
+    test("Rename second string", false, KVATChangeKey("secondstuff", "secondstuffnewname"));
+
+    // Retrieve second string with new name
+    if (test("Retrieve second string with new name", false, KVATRetrieveStringByAllocation("secondstuffnewname", &ret))){
+        UARTprintf("<v>%s\n", (char*)ret);
+
+        free(ret);
+    }
+
     // Retrieve
-    if (test("Retrieve string with route", false, KVATRetrieveString("second/key/this.h", &ret))){
-        UARTprintf("<v>%s\n", (char*)ret);
-
-        free(ret);
-    }
-
-    if (test("Retrieve string with (wrong) route", true, KVATRetrieveString("second/key/this.c", &ret))){
-        UARTprintf("<v>%s\n", (char*)ret);
-
-        free(ret);
-    }
-
-    // Retrieve
-    if (test("Retrieve first string", false, KVATRetrieveString("singKey", &ret))){
-        UARTprintf("<v>%s\n", (char*)ret);
-
-        free(ret);
-    }
-
-    // Delete
-    test("Delete first string", false, KVATDeleteValue("singKey"));
-
-    // Retrieve Deleted
-    if (test("Retrieve Deleted first string", true, KVATRetrieveString("singKey", &ret))){
-        UARTprintf("<v>%s\n", (char*)ret);
-
-        free(ret);
-    }
-
-    // Retrieve
-    if (test("Retrieve string with route again", false, KVATRetrieveString("second/key/this.h", &ret))){
+    if (test("Retrieve string with route again", false, KVATRetrieveStringByAllocation("second/key/this.h", &ret))){
         UARTprintf("<v>%s\n", (char*)ret);
 
         free(ret);
@@ -165,7 +170,7 @@ int main(void){
     //
     UARTStdioConfig(0, 115200, ui32SysClock);
     UARTprintf("\033[2J\033[H");
-    UARTprintf("KVAT 0.1\n");
+    UARTprintf("KVAT 0.3\n");
 
 
 

@@ -1,6 +1,6 @@
 /*
  * kvat.c
- * KVAT - Key Value Address Table
+ * KVAT 0.3 - Key Value Address Table
  * Dictionary-like file system intended for internal EEPROM
  *
  * Author: repixen
@@ -19,8 +19,8 @@
 //==========================================================
 // FORMATTING LIMITS
 
-#define FORMATID 214    // Persistence marker for formatting. Mismatch from storage will invalidate it.
-#define PAGESIZE 8      // Size of a single page in bytes. Pages need to be a multiple of 4 bytes in size (256 max on single-byte-remains scheme)
+#define FORMATID 208    // Persistence marker for formatting. Mismatch from storage will invalidate it.
+#define PAGESIZE 12     // Size of a single page in bytes. Pages need to be a multiple of 4 bytes in size (256 max on single-byte-remains scheme)
 #define PAGECOUNT 128   // 255 max on a single-byte-paging scheme
 
 // NOTE: Current implementation scheme is single-byte-paging and single-byte-remains (usable storage on max: 65KB)
@@ -580,20 +580,22 @@ static bool updatePageRecord(){
  * Pulls entire data chain into a single allocated buffer and returns pointer. Extra null terminated after max size for security.
  * If expecting to perform multiple fetches, a preallocated memory region can be used for the fetched data.
  *
- * @param      startPage           The number of the page that the data chain starts on.
- * @param      isChainMultiple     The type of chain. Pass true for a multiple page chain.
- * @param[out] size                Optional: The maximum size of the data read (if it filled all pages exactly).
- * @param      preallocBuffer      Optional: Reference to memory region for fetched data dumping (recommended for repetitive fetching).
- *                                           Note: if fetched data does not fit in this buffer, a separate memory region will be allocated.
- * @param      preallocBufferSize  Optional: The size of the preallocated buffer.
+ * @param      startPage                   The number of the page that the data chain starts on.
+ * @param      isChainMultiple             The type of chain. Pass true for a multiple page chain.
+ * @param[out] size                        Optional: The maximum size of the data read (if it filled all pages exactly).
+ * @param      preallocBuffer              Optional: Reference to memory region for fetched data dumping (recommended for repetitive fetching).
+ *                                                   Note: if fetched data does not fit in this buffer, a separate memory region will be allocated
+ *                                                         unless true is passed on forceFetchOnPreallocBuffer.
+ * @param      preallocBufferSize          Optional: The size of the preallocated buffer.
+ * @param      forceFetchOnPreallocBuffer  Optional: Indicates if preallocated buffer should be used even if unfit.
  *
  * @return Pointer to allocated buffer, preallocated buffer if used, or NULL.
  */
-static PageDataRef fetchData(PageNumber startPage, bool isChainMultiple, KVATSize* maxSize, PageDataRef preallocBuffer, KVATSize preallocBufferSize){
+static PageDataRef fetchData(PageNumber startPage, bool isChainMultiple, KVATSize* maxSize, PageDataRef preallocBuffer, KVATSize preallocBufferSize, bool forceFetchOnPreallocBuffer){
     //Get total size of chain
     PageNumber pageCount = 1;
     PageNumber currentPageN = startPage;
-    if (isChainMultiple){   // Only perform chain size calculation is chain is multiple pages
+    if (isChainMultiple){   // Only perform chain size calculation if chain is multiple pages
 
         for (; pageCount < index->pageCount; pageCount++){
             currentPageN = readNextPageNumber(currentPageN);
@@ -604,20 +606,32 @@ static PageDataRef fetchData(PageNumber startPage, bool isChainMultiple, KVATSiz
         }
     }
 
+
     // Calculate page internal sizes (take into account the single page case)
     KVATSize pageNextSize = getPageNextSize(isChainMultiple);
     KVATSize pageDataSize = index->pageSize-pageNextSize;
     KVATSize recordSize = pageDataSize*pageCount+1;         // Size of the record being fetched (rounded up by page count) (plus 1 byte for null terminator)
 
-    // Make nice buffers. One to keep a single page, another to keep the whole data read, unless it fits in preallocBuffer.
+    KVATSize lastPageTrim = 0;
+    // Is preallocated buffer forced even though it's too small?
+    if (forceFetchOnPreallocBuffer && preallocBufferSize<recordSize){
+        // we'll have trimming, then
+        recordSize = preallocBufferSize;
+        pageCount = recordSize/pageDataSize;
+        lastPageTrim = recordSize%pageDataSize;
+        if (lastPageTrim){pageCount++;};
+    }
+
+    // Make buffer to keep a single page
     PageDataRef singlePage = malloc(index->pageSize);
     if (singlePage==NULL){return NULL;}
 
-    PageDataRef record = (preallocBuffer!=NULL && preallocBufferSize>=recordSize) ? preallocBuffer : malloc(recordSize); // Returnable allocation, see if preallocated buffer can be used
+    // Returnable allocation, see if preallocated buffer can (or should) be used
+    PageDataRef record = (preallocBuffer!=NULL && preallocBufferSize>=recordSize) ? preallocBuffer : malloc(recordSize);
     if (record==NULL){free(singlePage); return NULL;}
 
     // Add null terminator in extra byte (cast to char* so it's indexed by bytes)
-    ((char*)record)[pageDataSize*pageCount] = '\0';
+    ((char*)record)[recordSize-1] = '\0';
 
     // Restart current page number
     currentPageN = startPage;
@@ -630,8 +644,10 @@ static PageDataRef fetchData(PageNumber startPage, bool isChainMultiple, KVATSiz
         // Only transfer data to nice record
         // Cast to char* [legal move] to do pointer arithmetic
         // (offset destination to fill the space of the current page)
-        // (and offset source to jump over the next page segment)
-        memcpy((char*)record+pageDataSize*i, (char*)singlePage+pageNextSize, pageDataSize);
+        // (and offset source to jump over the next page segment).
+        // Check if lastPageTrim is active, if so, and this is the last loop,
+        // only copy that portion of the page.
+        memcpy((char*)record+pageDataSize*i, (char*)singlePage+pageNextSize, (lastPageTrim && i+1==pageCount) ? lastPageTrim : pageDataSize);
 
         // Get next Page
         currentPageN = getNextPageNumberFromPage(singlePage);
@@ -794,7 +810,8 @@ static PageNumber writeData(PageDataRef data, KVATSize size, PageNumber reuseCha
 
     // Write to inout remains
     if (remains!=NULL){
-        *remains = pageDataSize - (size%pageDataSize);
+        KVATSize overflow = size%pageDataSize;
+        *remains = overflow ? pageDataSize-overflow : 0;
     }
 
     // Take care of overwrite chain if not all was used
@@ -844,7 +861,7 @@ static PageNumber lookupByKey(char* key, bool isPartialKey, PageNumber entryNumb
         if (entry.metadata & MACTIVE){
 
             // Fetch the key
-            entryKey = (char*)fetchData(entry.keyPage, entry.metadata & MKC_ISMULTIPLE, NULL, (PageDataRef)entryKeyPreallocBuff, STRINGKEYSTDLEN);
+            entryKey = (char*)fetchData(entry.keyPage, entry.metadata & MKC_ISMULTIPLE, NULL, (PageDataRef)entryKeyPreallocBuff, STRINGKEYSTDLEN, false);
             if (entryKey==NULL){break;} // If fetchData fails, abort.
 
             // Check key
@@ -957,12 +974,14 @@ KVATException KVATSaveString(char* key, char* value){
 //////////////////////////////////////////////////////////////////
 //  PUBLIC RETRIEVE
 
-KVATException KVATRetrieveValue(char* key, void** valuePointRef, KVATSize* size){
+KVATException KVATRetrieveValue(char* key, void* retrieveBuffer, KVATSize retrieveBufferSize, void** retrievePointerRef, KVATSize* size){
     // Assert
     if (!didInit || !key){return KVATException_invalidAccess;}
 
     // Reset inout return
-    *valuePointRef = NULL;
+    if (retrievePointerRef!=NULL){
+        *retrievePointerRef = NULL;
+    }
 
     // Look for this thing
     PageNumber tableEntryN = lookupByKey(key, false, 1);   // Look for same string. See if we need to overwrite.
@@ -976,7 +995,7 @@ KVATException KVATRetrieveValue(char* key, void** valuePointRef, KVATSize* size)
     KVATSize maxSize = 0;
 
     // Read value
-    PageDataRef value = fetchData(tableEntry.valuePage, tableEntry.metadata & MVC_ISMULTIPLE, &maxSize, NULL, NULL);
+    PageDataRef value = fetchData(tableEntry.valuePage, tableEntry.metadata & MVC_ISMULTIPLE, &maxSize, retrieveBuffer, retrieveBufferSize, retrieveBuffer!=NULL);
     if (value==NULL){return KVATException_fetchFault;}
 
     // Calculate actual size
@@ -984,13 +1003,20 @@ KVATException KVATRetrieveValue(char* key, void** valuePointRef, KVATSize* size)
         *size = maxSize-tableEntry.remains;
     }
 
-    *valuePointRef = value;
+    // Pass return to inout
+    if (retrievePointerRef!=NULL){
+        *retrievePointerRef = value;
+    }
 
     return KVATException_none;
 }
 
-KVATException KVATRetrieveString(char* key, char** valuePointRef){
-    return KVATRetrieveValue(key, (void**) valuePointRef, NULL);
+KVATException KVATRetrieveStringByAllocation(char* key, char** valuePointerRef){
+    return KVATRetrieveValue(key, NULL, NULL, (void**) valuePointerRef, NULL);
+}
+
+KVATException KVATRetrieveStringByBuffer(char* key, char* retrieveBuffer, KVATSize retrieveBufferSize){
+    return KVATRetrieveValue(key, (void*)retrieveBuffer, retrieveBufferSize, NULL, NULL);
 }
 
 //////////////////////////////////////////////////////////////////
@@ -1015,17 +1041,17 @@ KVATException KVATChangeKey(char* currentKey, char* newKey){
     // Save new key using the chain of the old key
     PageNumber keyStartPage = writeData((PageDataRef)newKey, strlen(newKey)+1, tableEntry.keyPage, tableEntry.metadata & MKC_ISMULTIPLE, &newKeySavedInMultipleChain, NULL);
     if (!keyStartPage){
+
         // No luck with new key, try to put old key back
         keyStartPage = writeData((PageDataRef)currentKey, strlen(currentKey)+1, tableEntry.keyPage, tableEntry.metadata & MKC_ISMULTIPLE, NULL, NULL);
 
         if (!keyStartPage){
             // Still no luck, this is kind of fatal.
             // Sorry to do this, but, loss of data is upon us.
-            tableEntry.metadata = MDEFAULT; // Default this entry
-            saveTableEntry(&tableEntry, tableEntryN);
+            tableEntry.metadata = MDEFAULT;           // Default this entry
+            saveTableEntry(&tableEntry, tableEntryN); // And save it
 
-            // Enter safe mode
-            deinit();
+            deinit(); // Enter safe mode
 
             return KVATException_unknown;
         }
@@ -1038,8 +1064,6 @@ KVATException KVATChangeKey(char* currentKey, char* newKey){
         setEntryMetadata(&tableEntry, MKC_ISMULTIPLE, newKeySavedInMultipleChain ? MKC_MULTIPLE : MKC_SINGLE);
         saveTableEntry(&tableEntry, tableEntryN);
     }
-
-
 
     return KVATException_none;
 }
