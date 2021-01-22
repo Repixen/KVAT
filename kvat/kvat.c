@@ -19,7 +19,7 @@
 //==========================================================
 // FORMATTING LIMITS
 
-#define FORMATID 213    // Persistence marker for formatting. Mismatch from storage will invalidate it.
+#define FORMATID 214    // Persistence marker for formatting. Mismatch from storage will invalidate it.
 #define PAGESIZE 8      // Size of a single page in bytes. Pages need to be a multiple of 4 bytes in size (256 max on single-byte-remains scheme)
 #define PAGECOUNT 128   // 255 max on a single-byte-paging scheme
 
@@ -330,14 +330,15 @@ static void readPage(PageDataRef pageData, PageNumber pageNumber, uint32_t limit
  *
  * @param      pageData        Reference to a buffer containing the data of the page to write
  * @param      pageNumber      Number of the page to write to.
+ * @param      limitWriteSize  Optional: Number of bytes to limit the writing to. Pass 0 to write entire length of page.
  *
  * @return Boolean with success of operation.
  */
-static bool writePage(PageDataRef pageData, PageNumber pageNumber){
+static bool writePage(PageDataRef pageData, PageNumber pageNumber, uint32_t limitWriteSize){
     StorageAddress pageAddress = getPageAddress(pageNumber);
 
     // Write to address
-    uint32_t programResult = MAP_EEPROMProgram(pageData, pageAddress, index->pageSize);
+    uint32_t programResult = MAP_EEPROMProgram(pageData, pageAddress, limitWriteSize ? limitWriteSize : index->pageSize);
 
     return !programResult;
 }
@@ -371,6 +372,13 @@ static PageNumber readNextPageNumber(PageNumber pageNumber){
     readPage(&pageData, pageNumber, sizeof(PageData));
 
     return getNextPageNumberFromPage(&pageData);
+}
+
+static bool saveNextPageNumber(PageNumber pageNumber, PageNumber nextPageNumber){
+    PageData pageData;  // A single instance of PageData (smallest chunk of a page) can contain the data for next page
+    readPage(&pageData, pageNumber, sizeof(PageData));              // Read smallest chunk of page (containing the next header)
+    memcpy(&pageData, &nextPageNumber, sizeof(PageNumber));          // Modify next header portion
+    return writePage(&pageData, pageNumber, sizeof(PageData));      // Save back into storage
 }
 
 //////////////////////////////////////////////////////////////////
@@ -587,7 +595,7 @@ static PageDataRef fetchData(PageNumber startPage, bool isChainMultiple, KVATSiz
     PageNumber currentPageN = startPage;
     if (isChainMultiple){   // Only perform chain size calculation is chain is multiple pages
 
-        for (; pageCount<index->pageCount; pageCount++){
+        for (; pageCount < index->pageCount; pageCount++){
             currentPageN = readNextPageNumber(currentPageN);
 
             if (currentPageN == 0){
@@ -599,7 +607,7 @@ static PageDataRef fetchData(PageNumber startPage, bool isChainMultiple, KVATSiz
     // Calculate page internal sizes (take into account the single page case)
     KVATSize pageNextSize = getPageNextSize(isChainMultiple);
     KVATSize pageDataSize = index->pageSize-pageNextSize;
-    KVATSize recordSize = pageDataSize*pageCount+1;         // Size of the record being fetched (plus 1 for null terminator)
+    KVATSize recordSize = pageDataSize*pageCount+1;         // Size of the record being fetched (rounded up by page count) (plus 1 byte for null terminator)
 
     // Make nice buffers. One to keep a single page, another to keep the whole data read, unless it fits in preallocBuffer.
     PageDataRef singlePage = malloc(index->pageSize);
@@ -654,53 +662,91 @@ static PageDataRef fetchData(PageNumber startPage, bool isChainMultiple, KVATSiz
  * @param[out] remains                   Optional: Indicates how much space was left empty in the last page written.
  *
  * @return Number of first page in the chain. Returns 0 (illegal page) to indicate insufficient space to store, invalid call, or error.
+ *         If write operation runs out
  */
-static PageNumber writeData(PageDataRef data, KVATSize size, PageNumber overwriteChainBeginning, bool isOverwriteChainMultiple, bool* wasMultipleChain, KVATSize* remains){
+static PageNumber writeData(PageDataRef data, KVATSize size, PageNumber reuseChainStartPage, bool isReuseChainMultiple, bool* didSaveInMultipleChain, KVATSize* remains){
     if (size==0){return 0;}
 
     // Calculate if data fits in single page
-    bool isSinglePage = size>index->pageSize ? false : true;
+    bool isMultipleChain = size > index->pageSize;
 
     // Calculate the page segment sizes
     KVATSize pageSize = index->pageSize;
-    KVATSize pageNextSize = getPageNextSize(!isSinglePage);
+    KVATSize pageNextSize = getPageNextSize(isMultipleChain);
     KVATSize pageDataSize = pageSize-pageNextSize;
 
     // Calculate pages needed (easy when it's single page)
-    PageNumber pagesNeeded = isSinglePage ? 1 : size/pageDataSize;
-    if (!isSinglePage && size%pageDataSize){ // Get crude ceil of division
+    PageNumber pagesNeeded = isMultipleChain ? size/pageDataSize : 1;
+    if (isMultipleChain && size%pageDataSize){ // Get crude ceil of division
         pagesNeeded++;
     }
+
+    // Guard pages needed (see if it's not even feasible)
+    if (pagesNeeded > index->pageCount){return 0;}
 
     // Get buffer to hold page data when assembling before saving
     PageDataRef pageData = malloc(index->pageSize);
     if (pageData==NULL){return 0;}
 
-    // Prepare places to keep track of the pages
+    // Support for overwrite chain
+    PageNumber reuseChainNext = reuseChainStartPage ? reuseChainStartPage : 0; // Page from reuse chain for next loop, if any
+    PageNumber reuseChainDryI = 0; // First iteration in which reuse chain wasn't used.
+
+    // Prepare place to keep track of the pages used
     PageNumber* pagesUsed = malloc(sizeof(PageNumber)*pagesNeeded);
     if (pagesUsed==NULL){free(pageData); return 0;}
+
+    // Effective trackers. The loop cycles thisPage into nextPage before using.
     PageNumber thisPageN = 0;
-    PageNumber nextPageN = overwriteChainBeginning ? overwriteChainBeginning : getEmptyPageNumber(true);
-    PageNumber overwriteChainNext = overwriteChainBeginning ? overwriteChainBeginning : 0;// Next from last page used from overwritten chain, if any
+    PageNumber nextPageN = reuseChainNext ? reuseChainNext : getEmptyPageNumber(true);
 
     for (PageNumber currentPageI = 0; currentPageI<pagesNeeded; currentPageI++){
-        // Try to cycle to the next overwriteChainNext
-        if (overwriteChainNext && isOverwriteChainMultiple){ // If the "next" from last loop was from a multiple page chain, maybe there is more.
-            overwriteChainNext = readNextPageNumber(overwriteChainNext);
 
-        }else if(overwriteChainNext!=0){
-            overwriteChainNext = 0;
+        // =========================================
+        // == MANAGE & VALIDATE PAGING
+        // =========================================
+
+        // Try to cycle to the next overwriteChainNext.
+        // Will be transfered to nextPageN before paging managing ends to be used on next loop (if valid).
+        //
+        if (reuseChainNext && isReuseChainMultiple){ // If the reuse chain "next" from last loop was from a multiple page chain,
+                                                     // maybe there is more for next loop.
+
+            reuseChainNext = readNextPageNumber(reuseChainNext); // This will find it.
+                                                                 // Or set to 0 if it's filled
+                                                                 // (no more) (nothing for next loop).
+
+            // If reuse chain will not be used on next loop, that is the dry iteration
+            if (!reuseChainNext){
+                reuseChainDryI = currentPageI+1;
+            }
+
+        }else if (reuseChainNext){ // If the reuse chain "next" from last loop was from a single chain.
+                                   // Last "loop" was actually setup. Also, there is nothing for next loop.
+
+            reuseChainNext = 0; // Filled (nothing for next loop).
+            reuseChainDryI = currentPageI+1; // Means that in the next loop the reuse chain will not be used.
         }
 
-        // Cycle to the next page and check it
+        // Cycle to the next page and validate it
+        //
         thisPageN = nextPageN;
 
-        if (thisPageN==0){// Looks like no more pages were available, return all pages used and fail gracefully.
-            for (PageNumber returnI = 0; returnI<currentPageI; returnI++){
-                markPageInRecord(pagesUsed[returnI], false);    // Mark as not used
+        // Storage filled test
+        //
+        if (thisPageN==0){ // Looks like no more pages were available.
+
+            // Return all new pages obtained (starting right after reuse chain was filled) and fail gracefully.
+            for (PageNumber returnI = reuseChainDryI; returnI<currentPageI; returnI++){
+                markPageInRecord(pagesUsed[returnI], false); // Mark as not used
             }
-            // Invalidate first page so caller knows that write operation failed
-            pagesUsed[0] = 0;
+
+            // Correctly terminate reuse chain. If there was one.
+            if (isReuseChainMultiple){
+                saveNextPageNumber(pagesUsed[reuseChainDryI-1], 0);
+            }
+
+            pagesUsed[0] = 0; // Invalidate first page so caller knows that write operation failed
             break;
 
         }else{
@@ -709,16 +755,20 @@ static PageNumber writeData(PageDataRef data, KVATSize size, PageNumber overwrit
         }
 
         // See if we will need a next page in the next loop, and get it ready
+        //
         if (currentPageI+1<pagesNeeded){ // Need another page
 
             // Try to reuse chain if available
-            nextPageN = overwriteChainNext ? overwriteChainNext : getEmptyPageNumber(true);
+            nextPageN = reuseChainNext ? reuseChainNext : getEmptyPageNumber(true);
 
         }else{ // No more pages needed
 
             nextPageN = 0;
-
         }
+
+        // =========================================
+        // == ACTUAL TRANSFER & WRITING
+        // =========================================
 
         // Write next page number into the working page
         memcpy(pageData, &nextPageN, pageNextSize);
@@ -726,8 +776,8 @@ static PageNumber writeData(PageDataRef data, KVATSize size, PageNumber overwrit
         // Write actual data - cast to char* [legal move] to do pointer arithmetic
         memcpy((char*)pageData+pageNextSize, (char*)data+pageDataSize*currentPageI, pageDataSize);
 
-        // Page is complete, now put it on storage
-        writePage(pageData, thisPageN);
+        // Page is complete, now put it on storage. Write the whole page (no limit).
+        writePage(pageData, thisPageN, 0);
 
     }
 
@@ -738,8 +788,8 @@ static PageNumber writeData(PageDataRef data, KVATSize size, PageNumber overwrit
     free(pagesUsed);
 
     // Write to inout wasMultipleChain
-    if (wasMultipleChain!=NULL){
-        *wasMultipleChain = !isSinglePage;
+    if (didSaveInMultipleChain!=NULL){
+        *didSaveInMultipleChain = isMultipleChain;
     }
 
     // Write to inout remains
@@ -748,8 +798,8 @@ static PageNumber writeData(PageDataRef data, KVATSize size, PageNumber overwrit
     }
 
     // Take care of overwrite chain if not all was used
-    if (overwriteChainNext){
-        followPageChainAndSetPageRecord(overwriteChainNext, false, isOverwriteChainMultiple);
+    if (reuseChainNext){
+        followPageChainAndSetPageRecord(reuseChainNext, false, isReuseChainMultiple);
     }
 
     // Return page number of first page
@@ -765,7 +815,7 @@ static PageNumber writeData(PageDataRef data, KVATSize size, PageNumber overwrit
  *
  * @param      key                       String tag to look for.
  * @param      isPartialKey              Indicates if key passed is only part of the string to match.
- * @param      entryNumberSearchStart    Entry number to start searching from.
+ * @param      entryNumberSearchStart    Entry number to start searching from. Valid entry numbers start at 1.
  *
  * @return Number of the first entry that matched the key.
  */
@@ -779,12 +829,12 @@ static PageNumber lookupByKey(char* key, bool isPartialKey, PageNumber entryNumb
     // Get the length of the key being searched
     KVATSize keySize = strlen(key);
 
-    PageNumber entryCount = index->pageCount;   // Entry count equals page count
+    PageNumber entryCount = index->pageCount;   // Total number of possible entries. (equals page count by design)
     KVATKeyValueEntry entry;                    // Used to store current entry
     int keyCompare;
     KVATSize entryKeySize;
     bool didReadEntry;
-    for (PageNumber entryN = entryNumberSearchStart ? entryNumberSearchStart : 1; entryN<entryCount; entryN++){
+    for (PageNumber entryN = entryNumberSearchStart ? entryNumberSearchStart : 1; entryN<entryCount; entryN++){ // Search in all entries until found
 
         // Read entry from storage
         didReadEntry = readTableEntry(&entry, entryN);
@@ -1014,7 +1064,7 @@ KVATException KVATDeleteValue(char* key){
     followPageChainAndSetPageRecord(tableEntry.keyPage, false, tableEntry.metadata & MKC_ISMULTIPLE);
     followPageChainAndSetPageRecord(tableEntry.valuePage, false, tableEntry.metadata & MVC_ISMULTIPLE);
 
-    // Change metadata
+    // Change metadata to mark entry as empty
     tableEntry.metadata = MDEFAULT;
 
     // Save to end

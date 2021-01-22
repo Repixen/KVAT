@@ -77,8 +77,13 @@ void kvatTest(){
 
     char* ret;
 
+    test("Save String", false, KVATSaveString("singKey", "First."));
+
     // Save
-    test("Save String, with line break", false, KVATSaveString("singKey", "First string saved. \nMake sure it's on multiple pages."));
+    test("Overwrite String with longer one", false, KVATSaveString("singKey", "First string."));
+
+    // Overwrite
+    test("Overwrite string with even longer one", false, KVATSaveString("singKey", "First string. Now it's longer."));
 
     // Retrieve
     if (test("Retrieve", false, KVATRetrieveString("singKey", &ret))){
