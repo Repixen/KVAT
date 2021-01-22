@@ -22,6 +22,9 @@
 #include "utils/ustdlib.h"
 #include "kvat/kvat.h"
 
+#include "driverlib/rom.h"      // To use TivaWare contained in ROM
+#include "driverlib/rom_map.h"  //
+
 
 // The error routine that is called if the driver library encounters an error.
 #ifdef DEBUG
@@ -74,51 +77,61 @@ void kvatTest(){
 
     char* ret;
 
-    // Save
-    test("Save String, with line break", false, KVATSaveString("singKey", "First string saved. \nMake sure it's on multiple pages."));
+    // Save first string
+    test("Save string", false, KVATSaveString("singKey", "First."));
 
-    // Retrieve
-    if (test("Retrieve", false, KVATRetrieveString("singKey", &ret))){
+    // Save another string
+    test("Save another string", false, KVATSaveString("secondstuff", "This is the second stuff!"));
+
+    // overwrite first string
+    test("Overwrite first string with longer one", false, KVATSaveString("singKey", "First. This part is new."));
+
+    // overwrite first string again
+    test("Overwrite first string with even longer one", false, KVATSaveString("singKey", "First. This part is new. This is newer."));
+
+    // Retrieve first string
+    if (test("Retrieve first string", false, KVATRetrieveStringByAllocation("singKey", &ret))){
         UARTprintf("<v>%s\n", (char*)ret);
 
         free(ret);
     }
 
-    // Save with another key
+    // Save with route
     test("Save string with route", false, KVATSaveString("second/key/this.h", "Contents of the string saved with route"));
 
+    // Retrieve with route
+    if (test("Retrieve string with route", false, KVATRetrieveStringByAllocation("second/key/this.h", &ret))){
+        UARTprintf("<v>%s\n", (char*)ret);
+
+        free(ret);
+    }
+
+    // Retrieve with wrong route
+    if (test("Retrieve string with (wrong) route", true, KVATRetrieveStringByAllocation("second/key/this.c", &ret))){
+        UARTprintf("<v>%s\n", (char*)ret);
+
+        free(ret);
+    }
+
+    // Retrieve first string again
+    if (test("Retrieve first string again", false, KVATRetrieveStringByAllocation("singKey", &ret))){
+        UARTprintf("<v>%s\n", (char*)ret);
+
+        free(ret);
+    }
+
+    // Rename second string
+    test("Rename second string", false, KVATChangeKey("secondstuff", "secondstuffnewname"));
+
+    // Retrieve second string with new name
+    if (test("Retrieve second string with new name", false, KVATRetrieveStringByAllocation("secondstuffnewname", &ret))){
+        UARTprintf("<v>%s\n", (char*)ret);
+
+        free(ret);
+    }
+
     // Retrieve
-    if (test("Retrieve string with route", false, KVATRetrieveString("second/key/this.h", &ret))){
-        UARTprintf("<v>%s\n", (char*)ret);
-
-        free(ret);
-    }
-
-    if (test("Retrieve string with (wrong) route", true, KVATRetrieveString("second/key/this.c", &ret))){
-        UARTprintf("<v>%s\n", (char*)ret);
-
-        free(ret);
-    }
-
-    // Retrieve
-    if (test("Retrieve first string", false, KVATRetrieveString("singKey", &ret))){
-        UARTprintf("<v>%s\n", (char*)ret);
-
-        free(ret);
-    }
-
-    // Delete
-    test("Delete first string", false, KVATDeleteValue("singKey"));
-
-    // Retrieve Deleted
-    if (test("Retrieve Deleted first string", true, KVATRetrieveString("singKey", &ret))){
-        UARTprintf("<v>%s\n", (char*)ret);
-
-        free(ret);
-    }
-
-    // Retrieve
-    if (test("Retrieve string with route again", false, KVATRetrieveString("second/key/this.h", &ret))){
+    if (test("Retrieve string with route again", false, KVATRetrieveStringByAllocation("second/key/this.h", &ret))){
         UARTprintf("<v>%s\n", (char*)ret);
 
         free(ret);
@@ -128,7 +141,7 @@ void kvatTest(){
     UARTprintf("\nFinished testing\n============\n");
 
 
-    GPIOIntClear(GPIO_PORTJ_BASE, GPIO_PIN_0|GPIO_PIN_1);
+    MAP_GPIOIntClear(GPIO_PORTJ_BASE, GPIO_PIN_0|GPIO_PIN_1);
 }
 
 /**
@@ -144,7 +157,7 @@ int main(void){
     // Note: SYSCTL_CFG_VCO_240 is a new setting provided in TivaWare 2.2.x and
     // later to better reflect the actual VCO speed due to SYSCTL#22.
     //
-    ui32SysClock = SysCtlClockFreqSet((SYSCTL_XTAL_25MHZ |
+    ui32SysClock = MAP_SysCtlClockFreqSet((SYSCTL_XTAL_25MHZ |
                                            SYSCTL_OSC_MAIN |
                                            SYSCTL_USE_PLL |
                                            SYSCTL_CFG_VCO_240), 120000000);
@@ -157,7 +170,7 @@ int main(void){
     //
     UARTStdioConfig(0, 115200, ui32SysClock);
     UARTprintf("\033[2J\033[H");
-    UARTprintf("KVAT 0.1\n");
+    UARTprintf("KVAT 0.3\n");
 
 
 
@@ -169,9 +182,9 @@ int main(void){
     uint8_t pinStatus = GPIO_PIN_1;
     while(1){
 
-        GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_1, pinStatus);
+        MAP_GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_1, pinStatus);
         pinStatus ^= GPIO_PIN_1;
-        SysCtlDelay(8000000);
+        MAP_SysCtlDelay(8000000);
 
     }
 }

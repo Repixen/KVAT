@@ -1,6 +1,6 @@
 /*
  * kvat.c
- * KVAT - Key Value Address Table
+ * KVAT 0.3 - Key Value Address Table
  * Dictionary-like file system intended for internal EEPROM
  *
  * Author: repixen
@@ -19,8 +19,8 @@
 //==========================================================
 // FORMATTING LIMITS
 
-#define FORMATID 204    // Persistence marker for formatting. Mismatch from storage will invalidate it.
-#define PAGESIZE 8      // Size of a single page in bytes. Pages need to be a multiple of 4 bytes in size (256 max on single-byte-remains scheme)
+#define FORMATID 208    // Persistence marker for formatting. Mismatch from storage will invalidate it.
+#define PAGESIZE 12     // Size of a single page in bytes. Pages need to be a multiple of 4 bytes in size (256 max on single-byte-remains scheme)
 #define PAGECOUNT 128   // 255 max on a single-byte-paging scheme
 
 // NOTE: Current implementation scheme is single-byte-paging and single-byte-remains (usable storage on max: 65KB)
@@ -51,13 +51,13 @@
 
 // KEY TYPE
 #define MKC_ISMULTIPLE  0x04    // Mask
-#define MKC_MULTIPLE    0x00    // Key is stored in multiple pages
-#define MKC_SINGLE      0x04    // Key is stored in single page
+#define MKC_MULTIPLE    0x04    // Key is stored in multiple pages
+#define MKC_SINGLE      0x00    // Key is stored in single page
 
 // VALUE
 #define MVC_ISMULTIPLE  0x08    // Mask
-#define MVC_MULTIPLE    0x00    // Value is stored in multiple pages
-#define MVC_SINGLE      0x08    // Value is stored in single page
+#define MVC_MULTIPLE    0x08    // Value is stored in multiple pages
+#define MVC_SINGLE      0x00    // Value is stored in single page
 
 // KEY FORMAT
 #define MKEYFORMAT      0x30    // Mask
@@ -156,6 +156,17 @@ static void setEntryMetadata(KVATKeyValueEntry* entry, MetaData mask, MetaData v
     entry->metadata |= value & mask;  // Set value
 }
 
+static bool getMetadataBool(KVATKeyValueEntry* entry, MetaData mask){
+    return (entry->metadata & mask) ? true : false;
+}
+
+/**
+ * Returns the address in storage of a table entry
+ *
+ * @param      entryPosition          Position of the entry in the table
+ *
+ * @return Address of the table entry in storage.
+ */
 static StorageAddress getEntryAddressFromPosition(PageNumber entryPosition){
     return INDEXSTART + sizeof(KVATIndex) + sizeof(KVATKeyValueEntry)*entryPosition;
 }
@@ -319,14 +330,15 @@ static void readPage(PageDataRef pageData, PageNumber pageNumber, uint32_t limit
  *
  * @param      pageData        Reference to a buffer containing the data of the page to write
  * @param      pageNumber      Number of the page to write to.
+ * @param      limitWriteSize  Optional: Number of bytes to limit the writing to. Pass 0 to write entire length of page.
  *
  * @return Boolean with success of operation.
  */
-static bool writePage(PageDataRef pageData, PageNumber pageNumber){
+static bool writePage(PageDataRef pageData, PageNumber pageNumber, uint32_t limitWriteSize){
     StorageAddress pageAddress = getPageAddress(pageNumber);
 
     // Write to address
-    uint32_t programResult = MAP_EEPROMProgram(pageData, pageAddress, index->pageSize);
+    uint32_t programResult = MAP_EEPROMProgram(pageData, pageAddress, limitWriteSize ? limitWriteSize : index->pageSize);
 
     return !programResult;
 }
@@ -362,11 +374,18 @@ static PageNumber readNextPageNumber(PageNumber pageNumber){
     return getNextPageNumberFromPage(&pageData);
 }
 
+static bool saveNextPageNumber(PageNumber pageNumber, PageNumber nextPageNumber){
+    PageData pageData;  // A single instance of PageData (smallest chunk of a page) can contain the data for next page
+    readPage(&pageData, pageNumber, sizeof(PageData));              // Read smallest chunk of page (containing the next header)
+    memcpy(&pageData, &nextPageNumber, sizeof(PageNumber));          // Modify next header portion
+    return writePage(&pageData, pageNumber, sizeof(PageData));      // Save back into storage
+}
+
 //////////////////////////////////////////////////////////////////
 //  SIZES
 
-static KVATSize getPageNextSize(bool isSinglePage){
-    return isSinglePage ? 0 : sizeof(PageNumber);
+static KVATSize getPageNextSize(bool isPartOfMultipleChain){
+    return isPartOfMultipleChain ? sizeof(PageNumber) : 0;
 }
 
 
@@ -415,7 +434,7 @@ static bool checkPageFromRecord(PageNumber pageNumber){
     KVATSize recordSegment = pageNumber/8;
     char recordBit = pageNumber%8;
 
-    return pageRecord[recordSegment]&(1<<recordBit);
+    return pageRecord[recordSegment]&(1<<recordBit) ? true : false;
 }
 
 /**
@@ -480,25 +499,26 @@ static PageNumber getEmptyPageNumber(bool shouldMarkAsUsed){
  *
  * @param      chainStart        Page number the chain starts in.
  * @param      isActive          Status used to set the pages of the chain as.
- * @param      isSingle          Indicates if a chain is single paged
+ * @param      isMultiple        Indicates if a chain is multiple pages.
+ *
  */
-static void followPageChainAndSetPageRecord(PageNumber chainStart, bool isActive, bool isSingle){
+static void followPageChainAndSetPageRecord(PageNumber chainStart, bool isActive, bool isChainMultiple){
     if (chainStart==0){return;}
 
     PageNumber currentPageN = chainStart;
-    PageNumber chainPageN = 0;// Marks the number of the current page in the chain
-    PageNumber pageCount = index->pageCount;
+    PageNumber chainPageN = 0;// Marks the position of the current page in the chain
+    PageNumber maxPageCount = index->pageCount;
 
-    while (currentPageN!=0 && chainPageN<pageCount){
+    while (currentPageN!=0 && chainPageN<maxPageCount){    // Stop on chain's end, or on safe limit
         // Mark page in record
         markPageInRecord(currentPageN, isActive);
 
-        if (isSingle){
-            // There is no next page on single files
-            currentPageN = 0;
-        }else{
+        if (isChainMultiple){
             // Get next page
             currentPageN = readNextPageNumber(currentPageN);
+        }else{
+            // There is no next page on single chains
+            currentPageN = 0;
         }
 
         // Add to safe limiter
@@ -560,22 +580,24 @@ static bool updatePageRecord(){
  * Pulls entire data chain into a single allocated buffer and returns pointer. Extra null terminated after max size for security.
  * If expecting to perform multiple fetches, a preallocated memory region can be used for the fetched data.
  *
- * @param      startPage           The number of the page that the data chain starts on.
- * @param      isSinglePage        The type of chain. Pass true for a single page chain.
- * @param[out] size                Optional: The maximum size of the data read (if it filled all pages exactly).
- * @param      preallocBuffer      Optional: Reference to memory region for fetched data dumping (recommended for repetitive fetching).
- *                                           Note: if fetched data does not fit in this buffer, a separate memory region will be allocated.
- * @param      preallocBufferSize  Optional: The size of the preallocated buffer.
+ * @param      startPage                   The number of the page that the data chain starts on.
+ * @param      isChainMultiple             The type of chain. Pass true for a multiple page chain.
+ * @param[out] size                        Optional: The maximum size of the data read (if it filled all pages exactly).
+ * @param      preallocBuffer              Optional: Reference to memory region for fetched data dumping (recommended for repetitive fetching).
+ *                                                   Note: if fetched data does not fit in this buffer, a separate memory region will be allocated
+ *                                                         unless true is passed on forceFetchOnPreallocBuffer.
+ * @param      preallocBufferSize          Optional: The size of the preallocated buffer.
+ * @param      forceFetchOnPreallocBuffer  Optional: Indicates if preallocated buffer should be used even if unfit.
  *
  * @return Pointer to allocated buffer, preallocated buffer if used, or NULL.
  */
-static PageDataRef fetchData(PageNumber startPage, bool isSinglePage, KVATSize* maxSize, PageDataRef preallocBuffer, KVATSize preallocBufferSize){
+static PageDataRef fetchData(PageNumber startPage, bool isChainMultiple, KVATSize* maxSize, PageDataRef preallocBuffer, KVATSize preallocBufferSize, bool forceFetchOnPreallocBuffer){
     //Get total size of chain
     PageNumber pageCount = 1;
     PageNumber currentPageN = startPage;
-    if (!isSinglePage){
+    if (isChainMultiple){   // Only perform chain size calculation if chain is multiple pages
 
-        for (; pageCount<index->pageCount; pageCount++){
+        for (; pageCount < index->pageCount; pageCount++){
             currentPageN = readNextPageNumber(currentPageN);
 
             if (currentPageN == 0){
@@ -584,20 +606,32 @@ static PageDataRef fetchData(PageNumber startPage, bool isSinglePage, KVATSize* 
         }
     }
 
-    // Calculate page internal sizes (take into account the single page case)
-    KVATSize pageNextSize = getPageNextSize(isSinglePage);
-    KVATSize pageDataSize = index->pageSize-pageNextSize;
-    KVATSize recordSize = pageDataSize*pageCount+1;         // Size of the record being fetched (plus 1 for null terminator)
 
-    // Make nice buffers. One to keep a single page, another to keep the whole data read, unless it fits in preallocBuffer.
+    // Calculate page internal sizes (take into account the single page case)
+    KVATSize pageNextSize = getPageNextSize(isChainMultiple);
+    KVATSize pageDataSize = index->pageSize-pageNextSize;
+    KVATSize recordSize = pageDataSize*pageCount+1;         // Size of the record being fetched (rounded up by page count) (plus 1 byte for null terminator)
+
+    KVATSize lastPageTrim = 0;
+    // Is preallocated buffer forced even though it's too small?
+    if (forceFetchOnPreallocBuffer && preallocBufferSize<recordSize){
+        // we'll have trimming, then
+        recordSize = preallocBufferSize;
+        pageCount = recordSize/pageDataSize;
+        lastPageTrim = recordSize%pageDataSize;
+        if (lastPageTrim){pageCount++;};
+    }
+
+    // Make buffer to keep a single page
     PageDataRef singlePage = malloc(index->pageSize);
     if (singlePage==NULL){return NULL;}
 
-    PageDataRef record = (preallocBuffer!=NULL && preallocBufferSize>=recordSize) ? preallocBuffer : malloc(recordSize); // Returnable allocation
+    // Returnable allocation, see if preallocated buffer can (or should) be used
+    PageDataRef record = (preallocBuffer!=NULL && preallocBufferSize>=recordSize) ? preallocBuffer : malloc(recordSize);
     if (record==NULL){free(singlePage); return NULL;}
 
     // Add null terminator in extra byte (cast to char* so it's indexed by bytes)
-    ((char*)record)[pageDataSize*pageCount] = '\0';
+    ((char*)record)[recordSize-1] = '\0';
 
     // Restart current page number
     currentPageN = startPage;
@@ -610,8 +644,10 @@ static PageDataRef fetchData(PageNumber startPage, bool isSinglePage, KVATSize* 
         // Only transfer data to nice record
         // Cast to char* [legal move] to do pointer arithmetic
         // (offset destination to fill the space of the current page)
-        // (and offset source to jump over the next page segment)
-        memcpy((char*)record+pageDataSize*i, (char*)singlePage+pageNextSize, pageDataSize);
+        // (and offset source to jump over the next page segment).
+        // Check if lastPageTrim is active, if so, and this is the last loop,
+        // only copy that portion of the page.
+        memcpy((char*)record+pageDataSize*i, (char*)singlePage+pageNextSize, (lastPageTrim && i+1==pageCount) ? lastPageTrim : pageDataSize);
 
         // Get next Page
         currentPageN = getNextPageNumberFromPage(singlePage);
@@ -637,58 +673,96 @@ static PageDataRef fetchData(PageNumber startPage, bool isSinglePage, KVATSize* 
  * @param      data                      Data to be written to storage.
  * @param      size                      Size of data to be written (in bytes).
  * @param      overwriteChainBeginning   Optional: Page number of the beginning of an existing chain to overwrite with data
- * @param      isOverwriteChainSingle    Optional: Boolean to indicate if overwrite chain is single paged
- * @param[out] wasSinglePage             Indicates if data was saved into a single page.
+ * @param      isOverwriteChainMultiple  Optional: Boolean to indicate if overwrite chain is multiple pages
+ * @param[out] wasMultipleChain          Optional: Indicates if data was saved into a chain with multiple pages
  * @param[out] remains                   Optional: Indicates how much space was left empty in the last page written.
  *
  * @return Number of first page in the chain. Returns 0 (illegal page) to indicate insufficient space to store, invalid call, or error.
+ *         If write operation runs out
  */
-static PageNumber writeData(PageDataRef data, KVATSize size, PageNumber overwriteChainBeginning, bool isOverwriteChainSingle, bool* wasSinglePage, KVATSize* remains){
+static PageNumber writeData(PageDataRef data, KVATSize size, PageNumber reuseChainStartPage, bool isReuseChainMultiple, bool* didSaveInMultipleChain, KVATSize* remains){
     if (size==0){return 0;}
 
     // Calculate if data fits in single page
-    bool isSinglePage = size>index->pageSize ? false : true;
+    bool isMultipleChain = size > index->pageSize;
 
     // Calculate the page segment sizes
     KVATSize pageSize = index->pageSize;
-    KVATSize pageNextSize = getPageNextSize(isSinglePage);
+    KVATSize pageNextSize = getPageNextSize(isMultipleChain);
     KVATSize pageDataSize = pageSize-pageNextSize;
 
     // Calculate pages needed (easy when it's single page)
-    PageNumber pagesNeeded = isSinglePage ? 1 : size/pageDataSize;
-    if (!isSinglePage && size%pageDataSize){ // Get crude ceil of division
+    PageNumber pagesNeeded = isMultipleChain ? size/pageDataSize : 1;
+    if (isMultipleChain && size%pageDataSize){ // Get crude ceil of division
         pagesNeeded++;
     }
+
+    // Guard pages needed (see if it's not even feasible)
+    if (pagesNeeded > index->pageCount){return 0;}
 
     // Get buffer to hold page data when assembling before saving
     PageDataRef pageData = malloc(index->pageSize);
     if (pageData==NULL){return 0;}
 
-    // Prepare places to keep track of the pages
+    // Support for overwrite chain
+    PageNumber reuseChainNext = reuseChainStartPage ? reuseChainStartPage : 0; // Page from reuse chain for next loop, if any
+    PageNumber reuseChainDryI = 0; // First iteration in which reuse chain wasn't used.
+
+    // Prepare place to keep track of the pages used
     PageNumber* pagesUsed = malloc(sizeof(PageNumber)*pagesNeeded);
     if (pagesUsed==NULL){free(pageData); return 0;}
+
+    // Effective trackers. The loop cycles thisPage into nextPage before using.
     PageNumber thisPageN = 0;
-    PageNumber nextPageN = overwriteChainBeginning ? overwriteChainBeginning : getEmptyPageNumber(true);
-    PageNumber overwriteChainNext = overwriteChainBeginning ? overwriteChainBeginning : 0;// Next from last page used from overwritten chain, if any
+    PageNumber nextPageN = reuseChainNext ? reuseChainNext : getEmptyPageNumber(true);
 
     for (PageNumber currentPageI = 0; currentPageI<pagesNeeded; currentPageI++){
-        // Try to cycle to the next overwriteChainNext
-        if (overwriteChainNext && !isOverwriteChainSingle){ // If the "next" from last loop was from a multiple page chain, maybe there is more.
-            overwriteChainNext = readNextPageNumber(overwriteChainNext);
 
-        }else if(overwriteChainNext!=0){
-            overwriteChainNext = 0;
+        // =========================================
+        // == MANAGE & VALIDATE PAGING
+        // =========================================
+
+        // Try to cycle to the next overwriteChainNext.
+        // Will be transfered to nextPageN before paging managing ends to be used on next loop (if valid).
+        //
+        if (reuseChainNext && isReuseChainMultiple){ // If the reuse chain "next" from last loop was from a multiple page chain,
+                                                     // maybe there is more for next loop.
+
+            reuseChainNext = readNextPageNumber(reuseChainNext); // This will find it.
+                                                                 // Or set to 0 if it's filled
+                                                                 // (no more) (nothing for next loop).
+
+            // If reuse chain will not be used on next loop, that is the dry iteration
+            if (!reuseChainNext){
+                reuseChainDryI = currentPageI+1;
+            }
+
+        }else if (reuseChainNext){ // If the reuse chain "next" from last loop was from a single chain.
+                                   // Last "loop" was actually setup. Also, there is nothing for next loop.
+
+            reuseChainNext = 0; // Filled (nothing for next loop).
+            reuseChainDryI = currentPageI+1; // Means that in the next loop the reuse chain will not be used.
         }
 
-        // Cycle to the next page and check it
+        // Cycle to the next page and validate it
+        //
         thisPageN = nextPageN;
 
-        if (thisPageN==0){// Looks like no more pages were available, return all pages used and fail gracefully.
-            for (PageNumber returnI = 0; returnI<currentPageI; returnI++){
-                markPageInRecord(pagesUsed[returnI], false);    // Mark as not used
+        // Storage filled test
+        //
+        if (thisPageN==0){ // Looks like no more pages were available.
+
+            // Return all new pages obtained (starting right after reuse chain was filled) and fail gracefully.
+            for (PageNumber returnI = reuseChainDryI; returnI<currentPageI; returnI++){
+                markPageInRecord(pagesUsed[returnI], false); // Mark as not used
             }
-            // Invalidate first page so caller knows that write operation failed
-            pagesUsed[0] = 0;
+
+            // Correctly terminate reuse chain. If there was one.
+            if (isReuseChainMultiple){
+                saveNextPageNumber(pagesUsed[reuseChainDryI-1], 0);
+            }
+
+            pagesUsed[0] = 0; // Invalidate first page so caller knows that write operation failed
             break;
 
         }else{
@@ -697,16 +771,20 @@ static PageNumber writeData(PageDataRef data, KVATSize size, PageNumber overwrit
         }
 
         // See if we will need a next page in the next loop, and get it ready
+        //
         if (currentPageI+1<pagesNeeded){ // Need another page
 
             // Try to reuse chain if available
-            nextPageN = overwriteChainNext ? overwriteChainNext : getEmptyPageNumber(true);
+            nextPageN = reuseChainNext ? reuseChainNext : getEmptyPageNumber(true);
 
         }else{ // No more pages needed
 
             nextPageN = 0;
-
         }
+
+        // =========================================
+        // == ACTUAL TRANSFER & WRITING
+        // =========================================
 
         // Write next page number into the working page
         memcpy(pageData, &nextPageN, pageNextSize);
@@ -714,8 +792,8 @@ static PageNumber writeData(PageDataRef data, KVATSize size, PageNumber overwrit
         // Write actual data - cast to char* [legal move] to do pointer arithmetic
         memcpy((char*)pageData+pageNextSize, (char*)data+pageDataSize*currentPageI, pageDataSize);
 
-        // Page is complete, now put it on storage
-        writePage(pageData, thisPageN);
+        // Page is complete, now put it on storage. Write the whole page (no limit).
+        writePage(pageData, thisPageN, 0);
 
     }
 
@@ -725,17 +803,20 @@ static PageNumber writeData(PageDataRef data, KVATSize size, PageNumber overwrit
     // Free pages used tracker
     free(pagesUsed);
 
-    // Write to inout wasSinglePage
-    *wasSinglePage = isSinglePage;
+    // Write to inout wasMultipleChain
+    if (didSaveInMultipleChain!=NULL){
+        *didSaveInMultipleChain = isMultipleChain;
+    }
 
     // Write to inout remains
     if (remains!=NULL){
-        *remains = pageDataSize - (size%pageDataSize);
+        KVATSize overflow = size%pageDataSize;
+        *remains = overflow ? pageDataSize-overflow : 0;
     }
 
     // Take care of overwrite chain if not all was used
-    if (overwriteChainNext){
-        followPageChainAndSetPageRecord(overwriteChainNext, false, isOverwriteChainSingle);
+    if (reuseChainNext){
+        followPageChainAndSetPageRecord(reuseChainNext, false, isReuseChainMultiple);
     }
 
     // Return page number of first page
@@ -751,7 +832,7 @@ static PageNumber writeData(PageDataRef data, KVATSize size, PageNumber overwrit
  *
  * @param      key                       String tag to look for.
  * @param      isPartialKey              Indicates if key passed is only part of the string to match.
- * @param      entryNumberSearchStart    Entry number to start searching from.
+ * @param      entryNumberSearchStart    Entry number to start searching from. Valid entry numbers start at 1.
  *
  * @return Number of the first entry that matched the key.
  */
@@ -765,12 +846,12 @@ static PageNumber lookupByKey(char* key, bool isPartialKey, PageNumber entryNumb
     // Get the length of the key being searched
     KVATSize keySize = strlen(key);
 
-    PageNumber entryCount = index->pageCount;   // Entry count equals page count
+    PageNumber entryCount = index->pageCount;   // Total number of possible entries. (equals page count by design)
     KVATKeyValueEntry entry;                    // Used to store current entry
     int keyCompare;
     KVATSize entryKeySize;
     bool didReadEntry;
-    for (PageNumber entryN = entryNumberSearchStart ? entryNumberSearchStart : 1; entryN<entryCount; entryN++){
+    for (PageNumber entryN = entryNumberSearchStart ? entryNumberSearchStart : 1; entryN<entryCount; entryN++){ // Search in all entries until found
 
         // Read entry from storage
         didReadEntry = readTableEntry(&entry, entryN);
@@ -780,7 +861,7 @@ static PageNumber lookupByKey(char* key, bool isPartialKey, PageNumber entryNumb
         if (entry.metadata & MACTIVE){
 
             // Fetch the key
-            entryKey = (char*)fetchData(entry.keyPage, entry.metadata & MKC_ISMULTIPLE, NULL, (PageDataRef)entryKeyPreallocBuff, STRINGKEYSTDLEN);
+            entryKey = (char*)fetchData(entry.keyPage, entry.metadata & MKC_ISMULTIPLE, NULL, (PageDataRef)entryKeyPreallocBuff, STRINGKEYSTDLEN, false);
             if (entryKey==NULL){break;} // If fetchData fails, abort.
 
             // Check key
@@ -837,12 +918,12 @@ KVATException KVATSaveValue(char* key, void* value, KVATSize valueSize){
     bool didSaveEntry = saveTableEntry(&tableEntry, tableEntryN);
     if (!didSaveEntry){return KVATException_tableError;}
 
-    bool keySavedInSinglePage, valueSavedInSinglePage;
+    bool keySavedInMultipleChain, valueSavedInMultipleChain;
     KVATSize valueRemains;
 
     // Try to save the key if not overwrite
     if (!isOverwrite){
-        PageNumber keyStartPage = writeData((PageDataRef)key, strlen(key)+1, NULL, NULL, &keySavedInSinglePage, NULL);
+        PageNumber keyStartPage = writeData((PageDataRef)key, strlen(key)+1, NULL, NULL, &keySavedInMultipleChain, NULL);
         // Guard
         if (keyStartPage==0){return KVATException_insufficientSpace;}
         // Save start page
@@ -851,10 +932,10 @@ KVATException KVATSaveValue(char* key, void* value, KVATSize valueSize){
 
     // Prepare overwrite variables (if needed)
     PageNumber overwriteChainStart = isOverwrite ? tableEntry.valuePage : NULL; // The start page of the old chain
-    bool isOverwriteChainSingle = tableEntry.metadata & MVC_ISMULTIPLE;
+    bool isOverwriteChainMultiple = tableEntry.metadata & MVC_ISMULTIPLE;
 
     // Try to save the data (value)
-    PageNumber valueStartPage = writeData((PageDataRef)value, valueSize, overwriteChainStart, isOverwriteChainSingle, &valueSavedInSinglePage, &valueRemains);
+    PageNumber valueStartPage = writeData((PageDataRef)value, valueSize, overwriteChainStart, isOverwriteChainMultiple, &valueSavedInMultipleChain, &valueRemains);
     // Guard
     if (valueStartPage==0){return KVATException_insufficientSpace;}
     // Save start page
@@ -864,9 +945,9 @@ KVATException KVATSaveValue(char* key, void* value, KVATSize valueSize){
     if (isOverwrite){
         tableEntry.metadata &= MKC_ISMULTIPLE;   // Only keep previous key settings
     }else{
-        tableEntry.metadata = keySavedInSinglePage ? MKC_SINGLE : MKC_MULTIPLE; // Reset previous contents with new key settings
+        tableEntry.metadata = keySavedInMultipleChain ? MKC_MULTIPLE : MKC_SINGLE; // Reset previous contents with new key settings
     }
-    tableEntry.metadata |= MACTIVE | (valueSavedInSinglePage ? MVC_SINGLE : MVC_MULTIPLE) | MKF_STRING;
+    tableEntry.metadata |= MACTIVE | (valueSavedInMultipleChain ? MVC_MULTIPLE : MVC_SINGLE) | MKF_STRING;
 
     // Save remains
     tableEntry.remains = valueRemains;
@@ -893,12 +974,14 @@ KVATException KVATSaveString(char* key, char* value){
 //////////////////////////////////////////////////////////////////
 //  PUBLIC RETRIEVE
 
-KVATException KVATRetrieveValue(char* key, void** valuePointRef, KVATSize* size){
+KVATException KVATRetrieveValue(char* key, void* retrieveBuffer, KVATSize retrieveBufferSize, void** retrievePointerRef, KVATSize* size){
     // Assert
     if (!didInit || !key){return KVATException_invalidAccess;}
 
     // Reset inout return
-    *valuePointRef = NULL;
+    if (retrievePointerRef!=NULL){
+        *retrievePointerRef = NULL;
+    }
 
     // Look for this thing
     PageNumber tableEntryN = lookupByKey(key, false, 1);   // Look for same string. See if we need to overwrite.
@@ -912,7 +995,7 @@ KVATException KVATRetrieveValue(char* key, void** valuePointRef, KVATSize* size)
     KVATSize maxSize = 0;
 
     // Read value
-    PageDataRef value = fetchData(tableEntry.valuePage, tableEntry.metadata & MVC_ISMULTIPLE, &maxSize, NULL, NULL);
+    PageDataRef value = fetchData(tableEntry.valuePage, tableEntry.metadata & MVC_ISMULTIPLE, &maxSize, retrieveBuffer, retrieveBufferSize, retrieveBuffer!=NULL);
     if (value==NULL){return KVATException_fetchFault;}
 
     // Calculate actual size
@@ -920,13 +1003,69 @@ KVATException KVATRetrieveValue(char* key, void** valuePointRef, KVATSize* size)
         *size = maxSize-tableEntry.remains;
     }
 
-    *valuePointRef = value;
+    // Pass return to inout
+    if (retrievePointerRef!=NULL){
+        *retrievePointerRef = value;
+    }
 
     return KVATException_none;
 }
 
-KVATException KVATRetrieveString(char* key, char** valuePointRef){
-    return KVATRetrieveValue(key, (void**) valuePointRef, NULL);
+KVATException KVATRetrieveStringByAllocation(char* key, char** valuePointerRef){
+    return KVATRetrieveValue(key, NULL, NULL, (void**) valuePointerRef, NULL);
+}
+
+KVATException KVATRetrieveStringByBuffer(char* key, char* retrieveBuffer, KVATSize retrieveBufferSize){
+    return KVATRetrieveValue(key, (void*)retrieveBuffer, retrieveBufferSize, NULL, NULL);
+}
+
+//////////////////////////////////////////////////////////////////
+//  PUBLIC RENAME
+
+KVATException KVATChangeKey(char* currentKey, char* newKey){
+
+    if (!didInit || currentKey==NULL || newKey==NULL){return KVATException_invalidAccess;}
+
+    // Look for this thing
+    PageNumber tableEntryN = lookupByKey(currentKey, false, 1);
+    if (tableEntryN==0){return KVATException_notFound;}
+
+    // Get entry
+    KVATKeyValueEntry tableEntry;
+    bool didReadEntry = readTableEntry(&tableEntry, tableEntryN);
+    if (!didReadEntry){return KVATException_tableError;}
+
+    bool currentKeySavedInMultipleChain = tableEntry.metadata & MKC_ISMULTIPLE;
+    bool newKeySavedInMultipleChain;
+
+    // Save new key using the chain of the old key
+    PageNumber keyStartPage = writeData((PageDataRef)newKey, strlen(newKey)+1, tableEntry.keyPage, tableEntry.metadata & MKC_ISMULTIPLE, &newKeySavedInMultipleChain, NULL);
+    if (!keyStartPage){
+
+        // No luck with new key, try to put old key back
+        keyStartPage = writeData((PageDataRef)currentKey, strlen(currentKey)+1, tableEntry.keyPage, tableEntry.metadata & MKC_ISMULTIPLE, NULL, NULL);
+
+        if (!keyStartPage){
+            // Still no luck, this is kind of fatal.
+            // Sorry to do this, but, loss of data is upon us.
+            tableEntry.metadata = MDEFAULT;           // Default this entry
+            saveTableEntry(&tableEntry, tableEntryN); // And save it
+
+            deinit(); // Enter safe mode
+
+            return KVATException_unknown;
+        }
+
+        return KVATException_insufficientSpace;
+    }
+
+    // See if metadata needs changing
+    if (newKeySavedInMultipleChain != currentKeySavedInMultipleChain){
+        setEntryMetadata(&tableEntry, MKC_ISMULTIPLE, newKeySavedInMultipleChain ? MKC_MULTIPLE : MKC_SINGLE);
+        saveTableEntry(&tableEntry, tableEntryN);
+    }
+
+    return KVATException_none;
 }
 
 //////////////////////////////////////////////////////////////////
@@ -938,7 +1077,6 @@ KVATException KVATDeleteValue(char* key){
 
     // Look for this thing
     PageNumber tableEntryN = lookupByKey(key, false, 1);
-
     if (tableEntryN==0){return KVATException_notFound;}
 
     // Get entry
@@ -950,7 +1088,7 @@ KVATException KVATDeleteValue(char* key){
     followPageChainAndSetPageRecord(tableEntry.keyPage, false, tableEntry.metadata & MKC_ISMULTIPLE);
     followPageChainAndSetPageRecord(tableEntry.valuePage, false, tableEntry.metadata & MVC_ISMULTIPLE);
 
-    // Change metadata
+    // Change metadata to mark entry as empty
     tableEntry.metadata = MDEFAULT;
 
     // Save to end
