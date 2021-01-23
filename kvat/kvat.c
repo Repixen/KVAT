@@ -19,7 +19,7 @@
 //==========================================================
 // FORMATTING LIMITS
 
-#define FORMATID 208    // Persistence marker for formatting. Mismatch from storage will invalidate it.
+#define FORMATID 210    // Persistence marker for formatting. Mismatch from storage will invalidate it.
 #define PAGESIZE 12     // Size of a single page in bytes. Pages need to be a multiple of 4 bytes in size (256 max on single-byte-remains scheme)
 #define PAGECOUNT 128   // 255 max on a single-byte-paging scheme
 
@@ -109,6 +109,11 @@ static unsigned char* pageRecord = NULL;
 
 //==========================================================
 
+/**
+ * Writes index into storage
+ *
+ * @return KVATException_ (storageFault) (heapError) (none)
+ */
 static KVATException saveIndex(){
 
     // Produce a copy of the index to store
@@ -132,7 +137,7 @@ static KVATException saveIndex(){
 /**
  * Reads stored index from storage into 'index'
  *
- * @return KVATException_ (none) (invalidAccess) (heapError)
+ * @return KVATException_ (invalidAccess) (heapError) (none)
  */
 static KVATException readIndex(){
     if (index==NULL){return KVATException_invalidAccess;}
@@ -151,11 +156,27 @@ static KVATException readIndex(){
     return KVATException_none;
 }
 
+/**
+ * Eases the task of setting or clearing portions of metadata.
+ *
+ * @param      entry         Reference to a KVATKeyValueEntry for modification of metadata
+ * @param      mask          Mask for the bits to modify
+ * @param      value         Value to set on modifying bits only
+ *
+ */
 static void setEntryMetadata(KVATKeyValueEntry* entry, MetaData mask, MetaData value){
     entry->metadata &= ~mask;         // Clear position
     entry->metadata |= value & mask;  // Set value
 }
 
+/**
+ * Converts a masked portion of an entrie's metadata into a bool
+ *
+ * @param      entry         Reference to a KVATKeyValueEntry
+ * @param      mask          Mask for the bits of the metadata to convert to boolean
+ *
+ * @return bool
+ */
 static bool getMetadataBool(KVATKeyValueEntry* entry, MetaData mask){
     return (entry->metadata & mask) ? true : false;
 }
@@ -426,8 +447,8 @@ static void markPageInRecord(PageNumber pageNumber, bool isUsed){
  *
  * @param      pageNumber        The number of the page to check
  *
- * @return true           If used
- * @return false          If empty
+ * @return true    If used
+ * @return false   If empty
  */
 static bool checkPageFromRecord(PageNumber pageNumber){
     if (pageRecord==NULL || pageNumber==0){return true;}
@@ -582,7 +603,7 @@ static bool updatePageRecord(){
  *
  * @param      startPage                   The number of the page that the data chain starts on.
  * @param      isChainMultiple             The type of chain. Pass true for a multiple page chain.
- * @param[out] size                        Optional: The maximum size of the data read (if it filled all pages exactly).
+ * @param[out] maxSize                     Optional: The maximum size of the data read (if it filled all pages exactly).
  * @param      preallocBuffer              Optional: Reference to memory region for fetched data dumping (recommended for repetitive fetching).
  *                                                   Note: if fetched data does not fit in this buffer, a separate memory region will be allocated
  *                                                         unless true is passed on forceFetchOnPreallocBuffer.
@@ -606,15 +627,14 @@ static PageDataRef fetchData(PageNumber startPage, bool isChainMultiple, KVATSiz
         }
     }
 
-
     // Calculate page internal sizes (take into account the single page case)
     KVATSize pageNextSize = getPageNextSize(isChainMultiple);
     KVATSize pageDataSize = index->pageSize-pageNextSize;
-    KVATSize recordSize = pageDataSize*pageCount+1;         // Size of the record being fetched (rounded up by page count) (plus 1 byte for null terminator)
+    KVATSize recordSize = pageDataSize*pageCount+1; // Size of the record being fetched (rounded up by page count) (plus 1 byte for null terminator)
 
+    // See if trimming is necessary as a result from forceFetchOnPreallocBuffer
     KVATSize lastPageTrim = 0;
-    // Is preallocated buffer forced even though it's too small?
-    if (forceFetchOnPreallocBuffer && preallocBufferSize<recordSize){
+    if (forceFetchOnPreallocBuffer && preallocBufferSize<recordSize){ // Force is on & force is needed
         // we'll have trimming, then
         recordSize = preallocBufferSize;
         pageCount = recordSize/pageDataSize;
@@ -672,9 +692,9 @@ static PageDataRef fetchData(PageNumber startPage, bool isChainMultiple, KVATSiz
  *
  * @param      data                      Data to be written to storage.
  * @param      size                      Size of data to be written (in bytes).
- * @param      overwriteChainBeginning   Optional: Page number of the beginning of an existing chain to overwrite with data
- * @param      isOverwriteChainMultiple  Optional: Boolean to indicate if overwrite chain is multiple pages
- * @param[out] wasMultipleChain          Optional: Indicates if data was saved into a chain with multiple pages
+ * @param      reuseChainStartPage       Optional: Page number of the beginning of an existing chain to overwrite with data
+ * @param      isReuseChainMultiple      Optional: Boolean to indicate if overwrite chain is multiple pages
+ * @param[out] didSaveInMultipleChain    Optional: Indicates if data was saved into a chain with multiple pages
  * @param[out] remains                   Optional: Indicates how much space was left empty in the last page written.
  *
  * @return Number of first page in the chain. Returns 0 (illegal page) to indicate insufficient space to store, invalid call, or error.
@@ -724,7 +744,7 @@ static PageNumber writeData(PageDataRef data, KVATSize size, PageNumber reuseCha
 
         // Try to cycle to the next overwriteChainNext.
         // Will be transfered to nextPageN before paging managing ends to be used on next loop (if valid).
-        //
+
         if (reuseChainNext && isReuseChainMultiple){ // If the reuse chain "next" from last loop was from a multiple page chain,
                                                      // maybe there is more for next loop.
 
@@ -740,16 +760,16 @@ static PageNumber writeData(PageDataRef data, KVATSize size, PageNumber reuseCha
         }else if (reuseChainNext){ // If the reuse chain "next" from last loop was from a single chain.
                                    // Last "loop" was actually setup. Also, there is nothing for next loop.
 
-            reuseChainNext = 0; // Filled (nothing for next loop).
+            reuseChainNext = 0;              // Filled (nothing for next loop).
             reuseChainDryI = currentPageI+1; // Means that in the next loop the reuse chain will not be used.
         }
 
         // Cycle to the next page and validate it
-        //
+
         thisPageN = nextPageN;
 
         // Storage filled test
-        //
+
         if (thisPageN==0){ // Looks like no more pages were available.
 
             // Return all new pages obtained (starting right after reuse chain was filled) and fail gracefully.
@@ -771,7 +791,7 @@ static PageNumber writeData(PageDataRef data, KVATSize size, PageNumber reuseCha
         }
 
         // See if we will need a next page in the next loop, and get it ready
-        //
+
         if (currentPageI+1<pagesNeeded){ // Need another page
 
             // Try to reuse chain if available
@@ -896,10 +916,10 @@ static PageNumber lookupByKey(char* key, bool isPartialKey, PageNumber entryNumb
 KVATException KVATSaveValue(char* key, void* value, KVATSize valueSize){
     if (!didInit || !key){return KVATException_invalidAccess;}
 
-    // Get table entry for new, or existing for overwrite
-    PageNumber tableEntryN = lookupByKey(key, false, 1);   // Look for same string (overwrite)
+    // Get empty table entry for new, or existing for overwrite
+    PageNumber tableEntryN = lookupByKey(key, false, 1);   // Look for same key (overwrite)
     bool isOverwrite = true;
-    if (tableEntryN==0){
+    if (tableEntryN==0){                            // Same key not found
         tableEntryN = getEmptyTableEntryNumber();   // Get new entry
         isOverwrite = false;
     }
@@ -921,7 +941,7 @@ KVATException KVATSaveValue(char* key, void* value, KVATSize valueSize){
     bool keySavedInMultipleChain, valueSavedInMultipleChain;
     KVATSize valueRemains;
 
-    // Try to save the key if not overwrite
+    // Try to save the key if it's not an overwrite
     if (!isOverwrite){
         PageNumber keyStartPage = writeData((PageDataRef)key, strlen(key)+1, NULL, NULL, &keySavedInMultipleChain, NULL);
         // Guard
@@ -1011,12 +1031,16 @@ KVATException KVATRetrieveValue(char* key, void* retrieveBuffer, KVATSize retrie
     return KVATException_none;
 }
 
-KVATException KVATRetrieveStringByAllocation(char* key, char** valuePointerRef){
-    return KVATRetrieveValue(key, NULL, NULL, (void**) valuePointerRef, NULL);
+KVATException KVATRetrieveValueByBuffer(char* key, void* retrieveBuffer, KVATSize retrieveBufferSize, KVATSize* size){
+    return KVATRetrieveValue(key, retrieveBuffer, retrieveBufferSize, NULL, size);
 }
 
 KVATException KVATRetrieveStringByBuffer(char* key, char* retrieveBuffer, KVATSize retrieveBufferSize){
     return KVATRetrieveValue(key, (void*)retrieveBuffer, retrieveBufferSize, NULL, NULL);
+}
+
+KVATException KVATRetrieveStringByAllocation(char* key, char** valuePointerRef){
+    return KVATRetrieveValue(key, NULL, NULL, (void**) valuePointerRef, NULL);
 }
 
 //////////////////////////////////////////////////////////////////

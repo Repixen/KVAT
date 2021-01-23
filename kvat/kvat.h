@@ -41,6 +41,7 @@ typedef uint32_t KVATSize;
  */
 KVATException KVATInit();
 
+
 /**
  * Saves data tagged with a key
  *
@@ -52,6 +53,7 @@ KVATException KVATInit();
  */
 KVATException KVATSaveValue(char* key, void* value, KVATSize valueSize);
 
+
 /**
  * Saves a string of data tagged with a key. KVATSaveValue convenience.
  *
@@ -62,8 +64,9 @@ KVATException KVATSaveValue(char* key, void* value, KVATSize valueSize);
  */
 KVATException KVATSaveString(char* key, char* value);
 
+
 /**
- * Returns pointer to value corresponding to specified key.
+ * Reads value from storage corresponding to specified key.
  * Supports passing reference to a buffer to read data into, as well as allowing for memory to be specifically allocated for.
  * Warning: danger of memory leak on allocate mode. Returned pointer is referencing memory from heap. Free when appropriate.
  *
@@ -79,17 +82,20 @@ KVATException KVATSaveString(char* key, char* value);
  */
 KVATException KVATRetrieveValue(char* key, void* retrieveBuffer, KVATSize retrieveBufferSize, void** retrievePointerRef, KVATSize* size);
 
+
 /**
- * Returns pointer to string (in heap) corresponding to a key. KVATRetrieveValue convenience.
+ * Reads value from storage corresponding to specified key. KVATRetrieveValue convenience.
+ * Supports passing reference to a buffer to read data into.
  *
- * @param      key            String tag for the value to retrieve
- * @param[out] valuePointRef  Reference to a pointer that will be set to point to retrieved string.
- *                            Set to NULL if no match found.
- *                            Free memory when appropriate.
+ * @param      key                  String tag for the value to retrieve
+ * @param[out] retrieveBuffer       Reference to buffer to retrieve value into.
+ * @param      retrieveBufferSize   Size of retrieve buffer.
+ * @param[out] size                 Optional: Size of the value fetched in bytes.
  *
  * @return KVATException_ ... See KVATRetrieveValue
  */
-KVATException KVATRetrieveStringByAllocation(char* key, char** valuePointerRef);
+KVATException KVATRetrieveValueByBuffer(char* key, void* retrieveBuffer, KVATSize retrieveBufferSize, KVATSize* size);
+
 
 /**
  * Retrieves string corresponding to a key into a buffer. KVATRetrieveValue convenience.
@@ -101,6 +107,21 @@ KVATException KVATRetrieveStringByAllocation(char* key, char** valuePointerRef);
  */
 KVATException KVATRetrieveStringByBuffer(char* key, char* retrieveBuffer, KVATSize retrieveBufferSize);
 
+
+/**
+ * Returns pointer to string (in heap) corresponding to a key. KVATRetrieveValue convenience.
+ * Warning: danger of memory leak. Returned pointer is referencing memory from heap. Free when appropriate.
+ *
+ * @param      key            String tag for the value to retrieve
+ * @param[out] valuePointRef  Reference to a pointer that will be set to point to retrieved string.
+ *                            Set to NULL if no match found.
+ *                            Free memory when appropriate.
+ *
+ * @return KVATException_ ... See KVATRetrieveValue
+ */
+KVATException KVATRetrieveStringByAllocation(char* key, char** valuePointerRef);
+
+
 /**
  * Changes the key that labels a value.
  *
@@ -110,6 +131,7 @@ KVATException KVATRetrieveStringByBuffer(char* key, char* retrieveBuffer, KVATSi
  * @return KVATException_ (invalidAccess) (notFound) (tableError) (unknown) (insufficientSpace) (none)
  */
 KVATException KVATChangeKey(char* currentKey, char* newKey);
+
 
 /**
  * Deletes a saved value from storage
