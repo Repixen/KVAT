@@ -1,6 +1,6 @@
 /*
  * kvat.h
- * KVAT - Key Value Address Table
+ * KVAT 0.4 - Key Value Address Table
  * Dictionary-like file system intended for internal EEPROM
  *
  * Author: repixen
@@ -25,12 +25,14 @@ typedef enum KVATException{
     KVATException_storageFault,         // Related to non-volatile memory.
     KVATException_heapError,            // Related to memory allocation from heap
     KVATException_recordFault,          // Related to empty page record (vector)
-    KVATException_tableError            // write/read to entry table failed. Possible origin: logic/hardware. Safety deinit possible.
+    KVATException_tableError,           // write/read to entry table failed. Possible origin: logic/hardware. Safety deinit possible.
+    KVATException_keyDuplicate          // Key already being used
 }KVATException;
 
 // Types --------------------------
 
 typedef uint32_t KVATSize;
+typedef uint32_t KVATSearchID;
 
 // Prototypes ----------------------
 
@@ -123,12 +125,12 @@ KVATException KVATRetrieveStringByAllocation(char* key, char** valuePointerRef);
 
 
 /**
- * Changes the key that labels a value.
+ * Changes the key that labels a value if new key is not already being used.
  *
  * @param      currentKey      Current key.
  * @param      newKey          New key to change into.
  *
- * @return KVATException_ (invalidAccess) (notFound) (tableError) (unknown) (insufficientSpace) (none)
+ * @return KVATException_ (invalidAccess) (keyDuplicate) (notFound) (tableError) (unknown) (insufficientSpace) (none)
  */
 KVATException KVATChangeKey(char* currentKey, char* newKey);
 
@@ -142,5 +144,16 @@ KVATException KVATChangeKey(char* currentKey, char* newKey);
  */
 KVATException KVATDeleteValue(char* key);
 
+/**
+ * Searches for a key from a partial query.
+ *
+ * @param      key              Beginning of a key to search for.
+ * @param      searchID         Reference to variable to store search continuity. Declare as 1 on start.
+ * @param      keyFound         Buffer to store the key found.
+ * @param      keyFoundMaxSize  Size of keyFound buffer.
+ *
+ * @return KVATException_ (invalidAccess) (notFound) (none)
+ */
+KVATException KVATSearch(char* key, KVATSearchID* searchID, char* keyFound, KVATSize keyFoundMaxSize);
 
 #endif /* KVAT_H_ */

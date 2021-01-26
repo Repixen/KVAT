@@ -1,6 +1,6 @@
 /*
  * kvat.c
- * KVAT 0.3 - Key Value Address Table
+ * KVAT 0.4 - Key Value Address Table
  * Dictionary-like file system intended for internal EEPROM
  *
  * Author: repixen
@@ -19,7 +19,7 @@
 //==========================================================
 // FORMATTING LIMITS
 
-#define FORMATID 210    // Persistence marker for formatting. Mismatch from storage will invalidate it.
+#define FORMATID 213    // Persistence marker for formatting. Mismatch from storage will invalidate it.
 #define PAGESIZE 12     // Size of a single page in bytes. Pages need to be a multiple of 4 bytes in size (256 max on single-byte-remains scheme)
 #define PAGECOUNT 128   // 255 max on a single-byte-paging scheme
 
@@ -850,13 +850,17 @@ static PageNumber writeData(PageDataRef data, KVATSize size, PageNumber reuseCha
 /**
  * Looks for the entry number that matches a key, either exactly or partially.
  *
- * @param      key                       String tag to look for.
- * @param      isPartialKey              Indicates if key passed is only part of the string to match.
- * @param      entryNumberSearchStart    Entry number to start searching from. Valid entry numbers start at 1.
+ * @param       key                       String tag to look for.
+ * @param       isPartialKey              Indicates if key passed is only part of the string to match.
+ * @param       entryNumberSearchStart    Entry number to start searching from. Valid entry numbers start at 1.
+ * @param[out]  keyFound                  Optional: Reference to buffer to store the key found.
+ * @param       keyFoundMaxSize           Optional: Size of the found key return buffer.
  *
  * @return Number of the first entry that matched the key.
  */
-static PageNumber lookupByKey(char* key, bool isPartialKey, PageNumber entryNumberSearchStart){
+static PageNumber lookupByKey(char* key, bool isPartialKey, PageNumber entryNumberSearchStart, char* keyFound, KVATSize keyFoundMaxSize){
+    if (key==NULL){return 0;}
+
     PageNumber match = 0;   // To keep the entry that matched
 
     // Prepare preallocated buffer for multiple key fetches, keep a separate definition for actual return
@@ -868,9 +872,9 @@ static PageNumber lookupByKey(char* key, bool isPartialKey, PageNumber entryNumb
 
     PageNumber entryCount = index->pageCount;   // Total number of possible entries. (equals page count by design)
     KVATKeyValueEntry entry;                    // Used to store current entry
-    int keyCompare;
     KVATSize entryKeySize;
     bool didReadEntry;
+
     for (PageNumber entryN = entryNumberSearchStart ? entryNumberSearchStart : 1; entryN<entryCount; entryN++){ // Search in all entries until found
 
         // Read entry from storage
@@ -887,23 +891,29 @@ static PageNumber lookupByKey(char* key, bool isPartialKey, PageNumber entryNumb
             // Check key
             entryKeySize = strlen(entryKey);
 
-            // Compare em
-            keyCompare = strncmp(key, entryKey, keySize);
+            // Size check
+            if ( (isPartialKey && keySize<=entryKeySize) || (!isPartialKey && keySize==entryKeySize)){
 
-            // Cleanup. Yes, at this point is fine. Shall not forget to free this possible allocated space.
+                // Perform detail comparison
+                if (strncmp(key, entryKey, keySize)==0){ // 0  means equal
+                    match = entryN;
+
+                    // Pass found key back
+                    if (keyFound!=NULL){
+                        strncpy(keyFound, entryKey, keyFoundMaxSize);
+                    }
+                }
+            }
+
+            // Cleanup.
             if (entryKey != entryKeyPreallocBuff){ // In the case that the fetch had to reserve a longer buffer
                 free(entryKey);
             }
 
-            // Size check
-            if ( (isPartialKey && keySize<=entryKeySize) || (!isPartialKey && keySize==entryKeySize)){
-
-                if (!keyCompare){ // 0  means equal
-                    match = entryN;
-                    break;
-                }
+            // We got a match, no need to keep lookin'
+            if (match){
+                break;
             }
-
         }
     }
 
@@ -917,7 +927,7 @@ KVATException KVATSaveValue(char* key, void* value, KVATSize valueSize){
     if (!didInit || !key){return KVATException_invalidAccess;}
 
     // Get empty table entry for new, or existing for overwrite
-    PageNumber tableEntryN = lookupByKey(key, false, 1);   // Look for same key (overwrite)
+    PageNumber tableEntryN = lookupByKey(key, false, 1, NULL, NULL);   // Look for same key (overwrite)
     bool isOverwrite = true;
     if (tableEntryN==0){                            // Same key not found
         tableEntryN = getEmptyTableEntryNumber();   // Get new entry
@@ -1004,7 +1014,7 @@ KVATException KVATRetrieveValue(char* key, void* retrieveBuffer, KVATSize retrie
     }
 
     // Look for this thing
-    PageNumber tableEntryN = lookupByKey(key, false, 1);   // Look for same string. See if we need to overwrite.
+    PageNumber tableEntryN = lookupByKey(key, false, 1, NULL, NULL);   // Look for same string. See if we need to overwrite.
     if (tableEntryN==0){return KVATException_notFound;}
 
     // Get entry
@@ -1050,8 +1060,12 @@ KVATException KVATChangeKey(char* currentKey, char* newKey){
 
     if (!didInit || currentKey==NULL || newKey==NULL){return KVATException_invalidAccess;}
 
+    // Check if new key is available
+    PageNumber tableEntryN = lookupByKey(newKey, false, 1, NULL, NULL);
+    if (tableEntryN){return KVATException_keyDuplicate;}
+
     // Look for this thing
-    PageNumber tableEntryN = lookupByKey(currentKey, false, 1);
+    tableEntryN = lookupByKey(currentKey, false, 1, NULL, NULL);
     if (tableEntryN==0){return KVATException_notFound;}
 
     // Get entry
@@ -1100,7 +1114,7 @@ KVATException KVATDeleteValue(char* key){
     if (!didInit || !key){return KVATException_invalidAccess;}
 
     // Look for this thing
-    PageNumber tableEntryN = lookupByKey(key, false, 1);
+    PageNumber tableEntryN = lookupByKey(key, false, 1, NULL, NULL);
     if (tableEntryN==0){return KVATException_notFound;}
 
     // Get entry
@@ -1119,6 +1133,23 @@ KVATException KVATDeleteValue(char* key){
     bool didSaveEntry = saveTableEntry(&tableEntry, tableEntryN);
     if (!didSaveEntry){return KVATException_tableError;}
 
+    return KVATException_none;
+}
+
+KVATException KVATSearch(char* key, KVATSearchID* searchID, char* keyFound, KVATSize keyFoundMaxSize){
+
+    if (!didInit || !key){return KVATException_invalidAccess;}
+
+    // Look for a partial match of the key, pass the inout buffer
+    PageNumber entryMatchN = lookupByKey(key, true, *searchID, keyFound, keyFoundMaxSize);
+
+    // No match, return exception
+    if (!entryMatchN){
+        return KVATException_notFound;
+    }
+
+    // Did find match, update the id (search placeholder)
+    *searchID = entryMatchN+1;
     return KVATException_none;
 }
 

@@ -41,7 +41,7 @@ char testingMismatch[] = "*****\n     Expectation mismatch >>\n";
  * @param      exception            Exception being interpreted
  * @param      expectingException   Identifies the expected characteristic of the exception passed.
  *
- * @return Boolean with the overall interpretation of the exception.
+ * @return Boolean with the overall interpretation of the exception. True on no exceptions.
  */
 bool test(char* title, bool expectingException, KVATException exception){
     UARTprintf("\n<test>%s:\n", title);
@@ -52,7 +52,7 @@ bool test(char* title, bool expectingException, KVATException exception){
             UARTprintf(testingMismatch);
         }
 
-        UARTprintf("     <KVATException> %d\n", exception);
+        UARTprintf("     <KVATException> %d\n     ", exception);
         return false;
 
     }
@@ -76,12 +76,28 @@ void kvatTest(){
     UARTprintf("============\nRunning Tests...\n\n");
 
     char* ret;
+    KVATSearchID id = 1;
+    char searchResults[32];
 
     // Save first string
     test("Save string", false, KVATSaveString("singKey", "First."));
 
     // Save another string
     test("Save another string", false, KVATSaveString("secondstuff", "This is the second stuff!"));
+
+    // Look for first string
+    if (test("Looking for key (s)", false, KVATSearch("s", &id, searchResults, 32))){
+        UARTprintf("<f>%s\n", searchResults);
+    }
+
+    // Look for first string
+    if (test("Looking for key (s), again", false, KVATSearch("s", &id, searchResults, 32))){
+        UARTprintf("<f>%s\n", searchResults);
+    }
+
+    // Look for first string on cont
+    test("Kept looking for key (s), should fail", true, KVATSearch("s", &id, searchResults, 32));
+    UARTprintf("<f>%s\n     <id>%d\n", searchResults, id);
 
     // overwrite first string
     test("Overwrite first string with longer one", false, KVATSaveString("singKey", "First. This part is new."));
@@ -97,17 +113,17 @@ void kvatTest(){
     }
 
     // Save with route
-    test("Save string with route", false, KVATSaveString("second/key/this.h", "Contents of the string saved with route"));
+    test("Save string with route", false, KVATSaveString("route/key/this.h", "Contents of the string saved with route"));
 
     // Retrieve with route
-    if (test("Retrieve string with route", false, KVATRetrieveStringByAllocation("second/key/this.h", &ret))){
+    if (test("Retrieve string with route", false, KVATRetrieveStringByAllocation("route/key/this.h", &ret))){
         UARTprintf("<v>%s\n", (char*)ret);
 
         free(ret);
     }
 
     // Retrieve with wrong route
-    if (test("Retrieve string with (wrong) route", true, KVATRetrieveStringByAllocation("second/key/this.c", &ret))){
+    if (test("Retrieve string with (wrong) route", true, KVATRetrieveStringByAllocation("route/key/this.c", &ret))){
         UARTprintf("<v>%s\n", (char*)ret);
 
         free(ret);
@@ -131,7 +147,7 @@ void kvatTest(){
     }
 
     // Retrieve
-    if (test("Retrieve string with route again", false, KVATRetrieveStringByAllocation("second/key/this.h", &ret))){
+    if (test("Retrieve string with route again", false, KVATRetrieveStringByAllocation("route/key/this.h", &ret))){
         UARTprintf("<v>%s\n", (char*)ret);
 
         free(ret);
@@ -170,7 +186,7 @@ int main(void){
     //
     UARTStdioConfig(0, 115200, ui32SysClock);
     UARTprintf("\033[2J\033[H");
-    UARTprintf("KVAT 0.3\n");
+    UARTprintf("KVAT 0.4\n");
 
 
 
