@@ -1,6 +1,6 @@
 /*
  * kvat.c
- * KVAT 0.4 - Key Value Address Table
+ * KVAT 0.5 - Key Value Address Table
  * Dictionary-like file system intended for internal EEPROM
  *
  * Author: repixen
@@ -19,7 +19,7 @@
 //==========================================================
 // FORMATTING LIMITS
 
-#define FORMATID 213    // Persistence marker for formatting. Mismatch from storage will invalidate it.
+#define FORMATID 214    // Persistence marker for formatting. Mismatch from storage will invalidate it.
 #define PAGESIZE 12     // Size of a single page in bytes. Pages need to be a multiple of 4 bytes in size (256 max on single-byte-remains scheme)
 #define PAGECOUNT 128   // 255 max on a single-byte-paging scheme
 
@@ -75,6 +75,8 @@ typedef unsigned char PageNumber;
 typedef uint32_t StorageAddress;
 typedef uint32_t PageData;
 typedef uint32_t* PageDataRef;
+typedef const uint32_t ConstPageData;
+typedef const uint32_t* ConstPageDataRef;
 
 //==========================================================
 // Index and table
@@ -372,7 +374,7 @@ static bool writePage(PageDataRef pageData, PageNumber pageNumber, uint32_t limi
  *
  * @return Number of the page that is next.
  */
-static PageNumber getNextPageNumberFromPage(PageDataRef pageData){
+static PageNumber getNextPageNumberFromPage(ConstPageDataRef pageData){
     // Copy the page number block to an actual PageNumber using memcpy
     // Could just alias pageData, but it's illegal and can cause problems if using compiler optimizations.
     PageNumber nextPage;
@@ -700,7 +702,7 @@ static PageDataRef fetchData(PageNumber startPage, bool isChainMultiple, KVATSiz
  * @return Number of first page in the chain. Returns 0 (illegal page) to indicate insufficient space to store, invalid call, or error.
  *         If write operation runs out
  */
-static PageNumber writeData(PageDataRef data, KVATSize size, PageNumber reuseChainStartPage, bool isReuseChainMultiple, bool* didSaveInMultipleChain, KVATSize* remains){
+static PageNumber writeData(ConstPageDataRef data, KVATSize size, PageNumber reuseChainStartPage, bool isReuseChainMultiple, bool* didSaveInMultipleChain, KVATSize* remains){
     if (size==0){return 0;}
 
     // Calculate if data fits in single page
@@ -810,7 +812,7 @@ static PageNumber writeData(PageDataRef data, KVATSize size, PageNumber reuseCha
         memcpy(pageData, &nextPageN, pageNextSize);
 
         // Write actual data - cast to char* [legal move] to do pointer arithmetic
-        memcpy((char*)pageData+pageNextSize, (char*)data+pageDataSize*currentPageI, pageDataSize);
+        memcpy((char*)pageData+pageNextSize, (const char*)data+pageDataSize*currentPageI, pageDataSize);
 
         // Page is complete, now put it on storage. Write the whole page (no limit).
         writePage(pageData, thisPageN, 0);
@@ -858,7 +860,7 @@ static PageNumber writeData(PageDataRef data, KVATSize size, PageNumber reuseCha
  *
  * @return Number of the first entry that matched the key.
  */
-static PageNumber lookupByKey(char* key, bool isPartialKey, PageNumber entryNumberSearchStart, char* keyFound, KVATSize keyFoundMaxSize){
+static PageNumber lookupByKey(const char* key, bool isPartialKey, PageNumber entryNumberSearchStart, char* keyFound, KVATSize keyFoundMaxSize){
     if (key==NULL){return 0;}
 
     PageNumber match = 0;   // To keep the entry that matched
@@ -923,7 +925,7 @@ static PageNumber lookupByKey(char* key, bool isPartialKey, PageNumber entryNumb
 //////////////////////////////////////////////////////////////////
 //  PUBLIC SAVE
 
-KVATException KVATSaveValue(char* key, void* value, KVATSize valueSize){
+KVATException KVATSaveValue(const char* key, const void* value, KVATSize valueSize){
     if (!didInit || !key){return KVATException_invalidAccess;}
 
     // Get empty table entry for new, or existing for overwrite
@@ -953,7 +955,7 @@ KVATException KVATSaveValue(char* key, void* value, KVATSize valueSize){
 
     // Try to save the key if it's not an overwrite
     if (!isOverwrite){
-        PageNumber keyStartPage = writeData((PageDataRef)key, strlen(key)+1, NULL, NULL, &keySavedInMultipleChain, NULL);
+        PageNumber keyStartPage = writeData((ConstPageDataRef)key, strlen(key)+1, NULL, NULL, &keySavedInMultipleChain, NULL);
         // Guard
         if (keyStartPage==0){return KVATException_insufficientSpace;}
         // Save start page
@@ -965,7 +967,7 @@ KVATException KVATSaveValue(char* key, void* value, KVATSize valueSize){
     bool isOverwriteChainMultiple = tableEntry.metadata & MVC_ISMULTIPLE;
 
     // Try to save the data (value)
-    PageNumber valueStartPage = writeData((PageDataRef)value, valueSize, overwriteChainStart, isOverwriteChainMultiple, &valueSavedInMultipleChain, &valueRemains);
+    PageNumber valueStartPage = writeData((ConstPageDataRef)value, valueSize, overwriteChainStart, isOverwriteChainMultiple, &valueSavedInMultipleChain, &valueRemains);
     // Guard
     if (valueStartPage==0){return KVATException_insufficientSpace;}
     // Save start page
@@ -997,14 +999,14 @@ KVATException KVATSaveValue(char* key, void* value, KVATSize valueSize){
  *
  * @return KVATException_ ... See KVATSaveValue
  */
-KVATException KVATSaveString(char* key, char* value){
-    return KVATSaveValue(key, (void*) value, strlen(value)+1); // Add 1 to length to save null terminator
+KVATException KVATSaveString(const char* key, const char* value){
+    return KVATSaveValue(key, value, strlen(value)+1); // Add 1 to length to save null terminator
 }
 
 //////////////////////////////////////////////////////////////////
 //  PUBLIC RETRIEVE
 
-KVATException KVATRetrieveValue(char* key, void* retrieveBuffer, KVATSize retrieveBufferSize, void** retrievePointerRef, KVATSize* size){
+KVATException KVATRetrieveValue(const char* key, void* retrieveBuffer, KVATSize retrieveBufferSize, void** retrievePointerRef, KVATSize* size){
     // Assert
     if (!didInit || !key){return KVATException_invalidAccess;}
 
@@ -1041,22 +1043,22 @@ KVATException KVATRetrieveValue(char* key, void* retrieveBuffer, KVATSize retrie
     return KVATException_none;
 }
 
-KVATException KVATRetrieveValueByBuffer(char* key, void* retrieveBuffer, KVATSize retrieveBufferSize, KVATSize* size){
+KVATException KVATRetrieveValueByBuffer(const char* key, void* retrieveBuffer, KVATSize retrieveBufferSize, KVATSize* size){
     return KVATRetrieveValue(key, retrieveBuffer, retrieveBufferSize, NULL, size);
 }
 
-KVATException KVATRetrieveStringByBuffer(char* key, char* retrieveBuffer, KVATSize retrieveBufferSize){
+KVATException KVATRetrieveStringByBuffer(const char* key, char* retrieveBuffer, KVATSize retrieveBufferSize){
     return KVATRetrieveValue(key, (void*)retrieveBuffer, retrieveBufferSize, NULL, NULL);
 }
 
-KVATException KVATRetrieveStringByAllocation(char* key, char** valuePointerRef){
+KVATException KVATRetrieveStringByAllocation(const char* key, char** valuePointerRef){
     return KVATRetrieveValue(key, NULL, NULL, (void**) valuePointerRef, NULL);
 }
 
 //////////////////////////////////////////////////////////////////
 //  PUBLIC RENAME
 
-KVATException KVATChangeKey(char* currentKey, char* newKey){
+KVATException KVATChangeKey(const char* currentKey, const char* newKey){
 
     if (!didInit || currentKey==NULL || newKey==NULL){return KVATException_invalidAccess;}
 
@@ -1077,11 +1079,11 @@ KVATException KVATChangeKey(char* currentKey, char* newKey){
     bool newKeySavedInMultipleChain;
 
     // Save new key using the chain of the old key
-    PageNumber keyStartPage = writeData((PageDataRef)newKey, strlen(newKey)+1, tableEntry.keyPage, tableEntry.metadata & MKC_ISMULTIPLE, &newKeySavedInMultipleChain, NULL);
+    PageNumber keyStartPage = writeData((ConstPageDataRef)newKey, strlen(newKey)+1, tableEntry.keyPage, tableEntry.metadata & MKC_ISMULTIPLE, &newKeySavedInMultipleChain, NULL);
     if (!keyStartPage){
 
         // No luck with new key, try to put old key back
-        keyStartPage = writeData((PageDataRef)currentKey, strlen(currentKey)+1, tableEntry.keyPage, tableEntry.metadata & MKC_ISMULTIPLE, NULL, NULL);
+        keyStartPage = writeData((ConstPageDataRef)currentKey, strlen(currentKey)+1, tableEntry.keyPage, tableEntry.metadata & MKC_ISMULTIPLE, NULL, NULL);
 
         if (!keyStartPage){
             // Still no luck, this is kind of fatal.
@@ -1109,7 +1111,7 @@ KVATException KVATChangeKey(char* currentKey, char* newKey){
 //////////////////////////////////////////////////////////////////
 //  PUBLIC DELETE
 
-KVATException KVATDeleteValue(char* key){
+KVATException KVATDeleteValue(const char* key){
     // Assert
     if (!didInit || !key){return KVATException_invalidAccess;}
 
@@ -1136,7 +1138,7 @@ KVATException KVATDeleteValue(char* key){
     return KVATException_none;
 }
 
-KVATException KVATSearch(char* key, KVATSearchID* searchID, char* keyFound, KVATSize keyFoundMaxSize){
+KVATException KVATSearch(const char* key, KVATSearchID* searchID, char* keyFound, KVATSize keyFoundMaxSize){
 
     if (!didInit || !key){return KVATException_invalidAccess;}
 

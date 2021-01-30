@@ -76,7 +76,7 @@ void kvatTest(){
     UARTprintf("============\nRunning Tests...\n\n");
 
     char* ret;
-    KVATSearchID id = 1;
+    KVATSearchID id = INITIALID;
     char searchResults[32];
 
     // Save first string
@@ -186,7 +186,7 @@ int main(void){
     //
     UARTStdioConfig(0, 115200, ui32SysClock);
     UARTprintf("\033[2J\033[H");
-    UARTprintf("KVAT 0.4\n");
+    UARTprintf("KVAT 0.5\n");
 
 
 

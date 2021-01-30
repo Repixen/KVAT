@@ -1,6 +1,6 @@
 /*
  * kvat.h
- * KVAT 0.4 - Key Value Address Table
+ * KVAT 0.5 - Key Value Address Table
  * Dictionary-like file system intended for internal EEPROM
  *
  * Author: repixen
@@ -29,6 +29,10 @@ typedef enum KVATException{
     KVATException_keyDuplicate          // Key already being used
 }KVATException;
 
+// Defines --------------------------
+
+#define INITIALID 1
+
 // Types --------------------------
 
 typedef uint32_t KVATSize;
@@ -53,7 +57,7 @@ KVATException KVATInit();
  *
  * @return KVATException_ (invalidAccess) (insufficientSpace) (tableError) (none)
  */
-KVATException KVATSaveValue(char* key, void* value, KVATSize valueSize);
+KVATException KVATSaveValue(const char* key, const void* value, KVATSize valueSize);
 
 
 /**
@@ -64,7 +68,7 @@ KVATException KVATSaveValue(char* key, void* value, KVATSize valueSize);
  *
  * @return KVATException_ ... See KVATSaveValue
  */
-KVATException KVATSaveString(char* key, char* value);
+KVATException KVATSaveString(const char* key, const char* value);
 
 
 /**
@@ -82,7 +86,7 @@ KVATException KVATSaveString(char* key, char* value);
  *
  * @return KVATException_ (invalidAccess) (notFound) (tableError) (fetchFault) (none)
  */
-KVATException KVATRetrieveValue(char* key, void* retrieveBuffer, KVATSize retrieveBufferSize, void** retrievePointerRef, KVATSize* size);
+KVATException KVATRetrieveValue(const char* key, void* retrieveBuffer, KVATSize retrieveBufferSize, void** retrievePointerRef, KVATSize* size);
 
 
 /**
@@ -96,7 +100,7 @@ KVATException KVATRetrieveValue(char* key, void* retrieveBuffer, KVATSize retrie
  *
  * @return KVATException_ ... See KVATRetrieveValue
  */
-KVATException KVATRetrieveValueByBuffer(char* key, void* retrieveBuffer, KVATSize retrieveBufferSize, KVATSize* size);
+KVATException KVATRetrieveValueByBuffer(const char* key, void* retrieveBuffer, KVATSize retrieveBufferSize, KVATSize* size);
 
 
 /**
@@ -107,7 +111,7 @@ KVATException KVATRetrieveValueByBuffer(char* key, void* retrieveBuffer, KVATSiz
  *
  * @return KVATException_ ... See KVATRetrieveValue
  */
-KVATException KVATRetrieveStringByBuffer(char* key, char* retrieveBuffer, KVATSize retrieveBufferSize);
+KVATException KVATRetrieveStringByBuffer(const char* key, char* retrieveBuffer, KVATSize retrieveBufferSize);
 
 
 /**
@@ -121,7 +125,7 @@ KVATException KVATRetrieveStringByBuffer(char* key, char* retrieveBuffer, KVATSi
  *
  * @return KVATException_ ... See KVATRetrieveValue
  */
-KVATException KVATRetrieveStringByAllocation(char* key, char** valuePointerRef);
+KVATException KVATRetrieveStringByAllocation(const char* key, char** valuePointerRef);
 
 
 /**
@@ -132,7 +136,7 @@ KVATException KVATRetrieveStringByAllocation(char* key, char** valuePointerRef);
  *
  * @return KVATException_ (invalidAccess) (keyDuplicate) (notFound) (tableError) (unknown) (insufficientSpace) (none)
  */
-KVATException KVATChangeKey(char* currentKey, char* newKey);
+KVATException KVATChangeKey(const char* currentKey, const char* newKey);
 
 
 /**
@@ -142,18 +146,18 @@ KVATException KVATChangeKey(char* currentKey, char* newKey);
  *
  * @return KVATException_ (invalidAccess) (notFound) (tableError) (none)
  */
-KVATException KVATDeleteValue(char* key);
+KVATException KVATDeleteValue(const char* key);
 
 /**
  * Searches for a key from a partial query.
  *
  * @param      key              Beginning of a key to search for.
- * @param      searchID         Reference to variable to store search continuity. Declare as 1 on start.
+ * @param      searchID         Reference to variable to store search continuity. Initialize with INITIALID.
  * @param      keyFound         Buffer to store the key found.
  * @param      keyFoundMaxSize  Size of keyFound buffer.
  *
  * @return KVATException_ (invalidAccess) (notFound) (none)
  */
-KVATException KVATSearch(char* key, KVATSearchID* searchID, char* keyFound, KVATSize keyFoundMaxSize);
+KVATException KVATSearch(const char* key, KVATSearchID* searchID, char* keyFound, KVATSize keyFoundMaxSize);
 
 #endif /* KVAT_H_ */
