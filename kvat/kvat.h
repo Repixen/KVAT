@@ -1,6 +1,6 @@
 /*
  * kvat.h
- * KVAT 0.5 - Key Value Address Table
+ * KVAT 0.5.1 - Key Value Address Table
  * Dictionary-like file system intended for internal EEPROM
  *
  * Author: repixen

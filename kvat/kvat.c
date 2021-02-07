@@ -1,6 +1,6 @@
 /*
  * kvat.c
- * KVAT 0.5 - Key Value Address Table
+ * KVAT 0.5.1 - Key Value Address Table
  * Dictionary-like file system intended for internal EEPROM
  *
  * Author: repixen
@@ -929,7 +929,7 @@ KVATException KVATSaveValue(const char* key, const void* value, KVATSize valueSi
     if (!didInit || !key){return KVATException_invalidAccess;}
 
     // Get empty table entry for new, or existing for overwrite
-    PageNumber tableEntryN = lookupByKey(key, false, 1, NULL, NULL);   // Look for same key (overwrite)
+    PageNumber tableEntryN = lookupByKey(key, false, 1, NULL, 0);   // Look for same key (overwrite)
     bool isOverwrite = true;
     if (tableEntryN==0){                            // Same key not found
         tableEntryN = getEmptyTableEntryNumber();   // Get new entry
@@ -955,7 +955,7 @@ KVATException KVATSaveValue(const char* key, const void* value, KVATSize valueSi
 
     // Try to save the key if it's not an overwrite
     if (!isOverwrite){
-        PageNumber keyStartPage = writeData((ConstPageDataRef)key, strlen(key)+1, NULL, NULL, &keySavedInMultipleChain, NULL);
+        PageNumber keyStartPage = writeData((ConstPageDataRef)key, strlen(key)+1, 0, NULL, &keySavedInMultipleChain, NULL);
         // Guard
         if (keyStartPage==0){return KVATException_insufficientSpace;}
         // Save start page
@@ -963,7 +963,7 @@ KVATException KVATSaveValue(const char* key, const void* value, KVATSize valueSi
     }
 
     // Prepare overwrite variables (if needed)
-    PageNumber overwriteChainStart = isOverwrite ? tableEntry.valuePage : NULL; // The start page of the old chain
+    PageNumber overwriteChainStart = isOverwrite ? tableEntry.valuePage : 0; // The start page of the old chain
     bool isOverwriteChainMultiple = tableEntry.metadata & MVC_ISMULTIPLE;
 
     // Try to save the data (value)
@@ -1016,7 +1016,7 @@ KVATException KVATRetrieveValue(const char* key, void* retrieveBuffer, KVATSize 
     }
 
     // Look for this thing
-    PageNumber tableEntryN = lookupByKey(key, false, 1, NULL, NULL);   // Look for same string. See if we need to overwrite.
+    PageNumber tableEntryN = lookupByKey(key, false, 1, NULL, 0);   // Look for same string. See if we need to overwrite.
     if (tableEntryN==0){return KVATException_notFound;}
 
     // Get entry
@@ -1052,7 +1052,7 @@ KVATException KVATRetrieveStringByBuffer(const char* key, char* retrieveBuffer, 
 }
 
 KVATException KVATRetrieveStringByAllocation(const char* key, char** valuePointerRef){
-    return KVATRetrieveValue(key, NULL, NULL, (void**) valuePointerRef, NULL);
+    return KVATRetrieveValue(key, NULL, 0, (void**) valuePointerRef, NULL);
 }
 
 //////////////////////////////////////////////////////////////////
@@ -1063,11 +1063,11 @@ KVATException KVATChangeKey(const char* currentKey, const char* newKey){
     if (!didInit || currentKey==NULL || newKey==NULL){return KVATException_invalidAccess;}
 
     // Check if new key is available
-    PageNumber tableEntryN = lookupByKey(newKey, false, 1, NULL, NULL);
+    PageNumber tableEntryN = lookupByKey(newKey, false, 1, NULL, 0);
     if (tableEntryN){return KVATException_keyDuplicate;}
 
     // Look for this thing
-    tableEntryN = lookupByKey(currentKey, false, 1, NULL, NULL);
+    tableEntryN = lookupByKey(currentKey, false, 1, NULL, 0);
     if (tableEntryN==0){return KVATException_notFound;}
 
     // Get entry
@@ -1116,7 +1116,7 @@ KVATException KVATDeleteValue(const char* key){
     if (!didInit || !key){return KVATException_invalidAccess;}
 
     // Look for this thing
-    PageNumber tableEntryN = lookupByKey(key, false, 1, NULL, NULL);
+    PageNumber tableEntryN = lookupByKey(key, false, 1, NULL, 0);
     if (tableEntryN==0){return KVATException_notFound;}
 
     // Get entry
